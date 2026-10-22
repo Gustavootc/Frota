@@ -130,8 +130,8 @@ th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase}
    (Supabase > Project Settings > API). Sem URL, o app abre em MODO DEMO.
    ===================================================================== */
 const CONFIG={
-  SUPABASE_URL:'https://ygzaosigjkxidbzbudec.supabase.co',
-  SUPABASE_ANON_KEY:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlnemFvc2lnamt4aWRiemJ1ZGVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1OTMxNzYsImV4cCI6MjEwODE2OTE3Nn0.okAmqqbco87_WDjKd4pwgGH06FkOtG7xecvx83fs8-U',
+  SUPABASE_URL:'https://ygzaosigjkxidbzbudec.supabase.co',                 // ex.: 'https://abcdefgh.supabase.co'
+  SUPABASE_ANON_KEY:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlnemFvc2lnamt4aWRiemJ1ZGVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1OTMxNzYsImV4cCI6MjEwODE2OTE3Nn0.okAmqqbco87_WDjKd4pwgGH06FkOtG7xecvx83fs8-U',            // chave "anon public" (NUNCA a service_role)
   EMAIL_DOMAIN:'frota.bgroup.app', // domínio interno fictício do login por cartão
   EMPRESA:'B. Group',
   VEHICLE_TYPES:['Indiferente','Hatch/compacto','Sedã','SUV','Picape/caminhonete (caçamba)','Utilitário/van'],
@@ -144,6 +144,8 @@ const CONFIG={
   CONSUMPTION_ALERT_PCT:25,        // alerta quando o km/L do último intervalo (tanque cheio→cheio) ficar X% abaixo do rendimento cadastrado
   DIVERGENCE:{KM_PCT:25,KM_ABS:15,KM_GAP:10,TIME_MIN:60,MAX_AVG_KMH:90}  // tolerâncias da tela Divergências (ajuste conforme a operação)
 };
+// tolera espaços, barra final ou caminho colado por engano (ex.: https://xxxx.supabase.co/rest/v1/) e espaços na chave
+CONFIG.SUPABASE_URL=String(CONFIG.SUPABASE_URL||'').trim().replace(/^(https?:\/\/[^\/\s]+).*$/i,'$1');CONFIG.SUPABASE_ANON_KEY=String(CONFIG.SUPABASE_ANON_KEY||'').replace(/\s+/g,'');
 const DEMO=!CONFIG.SUPABASE_URL||new URLSearchParams(location.search).has('demo');
 
 /* ======================= utilidades ======================= */
@@ -224,24 +226,6 @@ function consumptionSeries(refuels){const by={};
   if(Number(r.level_after)>=1&&pf>=0){kd=r.km!=null&&L[pf].km!=null?r.km-L[pf].km:null;const seg=L.slice(pf+1,i+1);lu=seg.reduce((s,x)=>s+(Number(x.liters)||0),0);cu=seg.reduce((s,x)=>s+(Number(x.cost)||0),0);if(kd>0&&lu>0)k=Math.round(kd/lu*100)/100}
   out.push({...r,km_driven:kd,liters_used:lu,cost_used:cu,kml:k});if(Number(r.level_after)>=1)pf=i})}
  return out}
-// resumo diário de abastecimento (espelha fc_daily_fuel_report() do banco; usado no modo demonstração)
-function fuelReport(t,p_day,pct=CONFIG.CONSUMPTION_ALERT_PCT,alertKm=CONFIG.FUEL_ALERT_KM){
- const d=p_day||today(),prev=addDays(d,-1),mstart=d.slice(0,8)+'01',fl=v=>fleetFlag(v,t.companies),VV=id=>t.vehicles.find(v=>v.id===id),L=x=>localDate(x);
- const fleet=[],pend=[],fv=t.vehicles.filter(v=>v.status!=='inativo'&&fl(v)).sort((a,b)=>a.plate.localeCompare(b.plate));
- const frefs=t.refuels.filter(r=>fl(VV(r.vehicle_id))),series=consumptionSeries(frefs);
- for(const v of fv){const k=Number(v.current_fuel==='alcool'?v.kml_alcool:v.kml_gasolina),tank=Number(v.tank_liters),lvl=Number(v.fuel_level),toq=Math.max(0,Math.round((lvl-.25)*tank*k));
-  let cum=0,crit=null;for(const b of t.bookings.filter(x=>x.vehicle_id===v.id&&['aprovada','chave_retirada','em_uso'].includes(x.status)&&new Date(x.end_at)>new Date()).sort((a,b)=>a.start_at.localeCompare(b.start_at))){if(b.est_km==null)continue;cum+=Number(b.est_km);if(!crit&&cum>=toq)crit=b}
-  const st=lvl<=.25?'agora':crit?'antes_reserva':toq<alertKm?'programar':'ok';
-  fleet.push({vehicle_id:v.id,plate:v.plate,model:v.model,company:t.companies.find(c=>c.id===v.company_id)?.name,fuel_level:lvl,km_current:v.km_current,fuel_updated_at:v.fuel_updated_at,autonomy_km:Math.round(lvl*tank*k),to_quarter_km:toq,status:st});
-  if(st!=='ok')pend.push({type:st==='agora'?'abastecer_agora':st==='antes_reserva'?'abastecer_antes_reserva':'programar_abastecimento',plate:v.plate,model:v.model,
-   detail:st==='agora'?`tanque em ${Math.round(lvl*100)}% (1/4 ou menos)`:st==='antes_reserva'?`abastecer antes da reserva de ${t.profiles.find(p=>p.id===crit.driver_id)?.name} em ${fmtDT(crit.start_at)}: reservas somam ~${cum} km e restam ~${toq} km até 1/4`:`faltam só ~${toq} km para chegar a 1/4`});
-  const last=series.filter(c=>c.vehicle_id===v.id&&c.kml!=null).pop();
-  if(last){const ref=Number(last.fuel_type==='alcool'?v.kml_alcool:v.kml_gasolina);if(last.kml<ref*(1-pct/100))pend.push({type:'consumo_acima',plate:v.plate,model:v.model,detail:`último intervalo: ${last.kml} km/L (cadastrado: ${ref} km/L; limite de alerta: ${pct}% abaixo)`})}}
- (t.fuel_requests||[]).filter(f=>f.status==='pendente').forEach(f=>{const v=VV(f.vehicle_id);if(v)pend.push({type:'solicitacao_checklist',plate:v.plate,model:v.model,detail:`o checklist de ${fmtDT(f.created_at)} indicou combustível abaixo de 1/4: solicitar abastecimento`})});
- const byV={};[...frefs].sort((a,b)=>a.created_at<b.created_at?-1:1).forEach(r=>{const p=byV[r.vehicle_id];if(p!=null&&r.km<p&&L(r.created_at)>=addDays(d,-7)){const v=VV(r.vehicle_id);pend.push({type:'km_divergente',plate:v.plate,model:v.model,detail:`abastecimento de ${fmtDT(r.created_at)} com ${r.km} km, menor que o registro anterior (${p} km)`})}byV[r.vehicle_id]=r.km});
- const yr=frefs.filter(r=>L(r.created_at)===prev).sort((a,b)=>a.created_at<b.created_at?-1:1),sum=a=>({refuels:a.length,liters:a.reduce((s,x)=>s+(Number(x.liters)||0),0),cost:a.reduce((s,x)=>s+(Number(x.cost)||0),0)});
- return{day:d,prev_day:prev,generated_at:nowISO(),fleet,refuels_prev_day:yr.map(r=>({plate:VV(r.vehicle_id).plate,model:VV(r.vehicle_id).model,liters:r.liters,cost:r.cost,km:r.km,station:r.station,fuel_type:r.fuel_type,at:r.created_at,by:t.profiles.find(p=>p.id===r.created_by)?.name})),
-  totals_prev_day:sum(yr),totals_month:sum(frefs.filter(r=>L(r.created_at)>=mstart&&L(r.created_at)<d)),pending:pend}}
 </script>
 <script>
 
@@ -296,14 +280,14 @@ class SupaAPI{
    notificações com deduplicação, sugestão de veículos e alertas periódicos (mesma lógica do schema.sql). */
 const E=m=>new Error(m);
 class DemoAPI{
- constructor(){this.t={profiles:[],vehicles:[],bookings:[],inspections:[],damages:[],refuels:[],maintenance:[],notifications:[],push_subscriptions:[],booking_events:[],maintenance_periods:[],companies:[],nosbeb_checklists:[],daily_email_log:[],vehicle_drivers:[],fuel_requests:[]};this.files={};this.pins={};this.cur=null;this.depth=0;this.listeners=[];this.sys=false}
+ constructor(){this.t={profiles:[],vehicles:[],bookings:[],inspections:[],damages:[],refuels:[],maintenance:[],notifications:[],push_subscriptions:[],booking_events:[],maintenance_periods:[],companies:[],nosbeb_checklists:[],vehicle_drivers:[],fuel_requests:[]};this.files={};this.pins={};this.cur=null;this.depth=0;this.listeners=[];this.sys=false}
  role(){return this.t.profiles.find(p=>p.id===this.cur&&p.active)?.role||''}
  isG(){return this.role()==='gestor'} isS(){return['gestor','recepcao'].includes(this.role())}
  visible(t,r){if(this.sys)return true;const u=this.cur,role=this.role();if(!role)return false;
   switch(t){case'profiles':return r.id===u||this.isS();case'vehicles':return this.isG();
    case'bookings':return this.isG()||r.driver_id===u||(role==='recepcao'&&(['aprovada','chave_retirada','em_uso','devolvido'].includes(r.status)||r.start_at>=new Date(Date.now()-2*864e5).toISOString()||(r.status==='solicitada'&&receptionEligible(r))));
    case'inspections':return this.isG()||r.driver_id===u||r.created_by===u;case'damages':return this.isG()||r.reported_by===u;
-   case'refuels':return this.isG()||(role==='recepcao'&&this.isFleetV(r.vehicle_id));case'maintenance':case'maintenance_periods':case'daily_email_log':return this.isG();case'companies':return true;case'nosbeb_checklists':return this.isS()||r.inspected_by===u;case'vehicle_drivers':return this.isS()||r.driver_id===u;case'fuel_requests':return this.isS();
+   case'refuels':return this.isG();case'maintenance':case'maintenance_periods':return this.isG();case'companies':return true;case'nosbeb_checklists':return this.isG()||r.inspected_by===u;case'vehicle_drivers':return this.isS()||r.driver_id===u;case'fuel_requests':return this.isG();
    case'notifications':case'push_subscriptions':return r.user_id===u;
    case'booking_events':return this.isG()||this.t.bookings.some(b=>b.id===r.booking_id&&b.driver_id===u)}return true}
  async login(card,pin){const p=this.t.profiles.find(x=>x.card===normCard(card));if(!p||this.pins[p.id]!==pin)throw E('Cartão ou PIN inválido.');if(!p.active)throw E('Usuário desativado.');this.cur=p.id;return clone(p)}
@@ -312,10 +296,10 @@ class DemoAPI{
  async select(t,q={}){let r=this.t[t].filter(x=>this.visible(t,x));for(const [op,c,v] of (q.f||[]))r=r.filter(x=>op==='eq'?x[c]===v:op==='neq'?x[c]!==v:op==='gte'?x[c]!=null&&x[c]>=v:op==='lte'?x[c]!=null&&x[c]<=v:op==='lt'?x[c]!=null&&x[c]<v:op==='gt'?x[c]!=null&&x[c]>v:op==='in'?v.includes(x[c]):op==='is'?x[c]==v:true);
   if(q.order)r.sort((a,b)=>((a[q.order]??'')>(b[q.order]??'')?1:(a[q.order]??'')<(b[q.order]??'')?-1:0)*(q.desc?-1:1));if(q.limit)r=r.slice(0,q.limit);return clone(r)}
  canWrite(t,op,r){if(this.sys)return true;const role=this.role(),u=this.cur;if(!role&&!(t==='profiles'&&!this.t.profiles.length))return false;
-  switch(t){case'vehicles':case'maintenance':case'maintenance_periods':case'companies':case'daily_email_log':case'vehicle_drivers':case'fuel_requests':return this.isG();case'refuels':return this.isG()||(op==='I'&&role==='recepcao'&&this.isFleetV(r.vehicle_id)&&r.created_by===u);case'nosbeb_checklists':return op==='I'?true:this.isG();case'profiles':return this.isG()||!this.t.profiles.length;
+  switch(t){case'vehicles':case'maintenance':case'maintenance_periods':case'companies':case'vehicle_drivers':case'fuel_requests':return this.isG();case'refuels':return this.isG();case'nosbeb_checklists':return op==='I'?true:this.isG();case'profiles':return this.isG()||!this.t.profiles.length;
    case'bookings':return this.isS()||r.driver_id===u;case'inspections':return op==='I'?(this.isS()||r.driver_id===u):this.isG();
    case'damages':return op==='I'?r.reported_by===u:this.isG();case'notifications':return op==='U'&&r.user_id===u;case'push_subscriptions':return r.user_id===u;default:return false}}
- async insert(t,row){const D0={bookings:{status:'solicitada',flags:[],created_by:this.cur,passengers:1,vehicle_type_requested:'Indiferente',carries_cargo:false,sp_rodizio:false},inspections:{driver_id:this.cur,created_by:this.cur,photos:{},extras:[],checks:{},skipped_steps:[],complete:true},damages:{status:'pendente',source:'ia',reported_by:this.cur},refuels:{created_by:this.cur,level_after:1},maintenance:{created_by:this.cur,done_at:today()},vehicles:{company_id:null,rodizio_exempt:false,status:'disponivel',fuel_level:1,current_fuel:'gasolina',km_current:0,vehicle_type:'Hatch/compacto',seats:5,tire_pressure_interval_days:15,has_spare_tire:true,has_wheel_wrench:true,has_jack:true,has_triangle:true,has_spare_key:false,spare_key_holder:'Gestor de frota'},profiles:{active:true,role:'condutor'},push_subscriptions:{user_id:this.cur},maintenance_periods:{created_by:this.cur,started_at:nowISO()},companies:{fleet_controls:false},nosbeb_checklists:{inspected_by:this.cur,checks:{}}};
+ async insert(t,row){const D0={bookings:{status:'solicitada',flags:[],created_by:this.cur,passengers:1,vehicle_type_requested:'Indiferente',carries_cargo:false,sp_rodizio:false},inspections:{driver_id:this.cur,created_by:this.cur,photos:{},extras:[],checks:{},skipped_steps:[],complete:true},damages:{status:'pendente',source:'ia',reported_by:this.cur},refuels:{created_by:this.cur,level_after:1},maintenance:{created_by:this.cur,done_at:today()},vehicles:{company_id:null,rodizio_exempt:false,base_photos:{},base_photos_at:null,status:'disponivel',fuel_level:1,current_fuel:'gasolina',km_current:0,vehicle_type:'Hatch/compacto',seats:5,tire_pressure_interval_days:15,has_spare_tire:true,has_wheel_wrench:true,has_jack:true,has_triangle:true,has_spare_key:false,spare_key_holder:'Gestor de frota'},profiles:{active:true,role:'condutor'},push_subscriptions:{user_id:this.cur},maintenance_periods:{created_by:this.cur,started_at:nowISO()},companies:{fleet_controls:false},nosbeb_checklists:{inspected_by:this.cur,checks:{},photos:{}}};
   const n={id:uuid(),created_at:nowISO(),...(D0[t]||{}),...clone(row)};
   if(!this.canWrite(t,'I',n))throw E('Sem permissão para esta ação.');
   if(t==='vehicles'&&this.t.vehicles.some(x=>x.plate===n.plate))throw E('Registro duplicado (placa ou cartão já cadastrado).');
@@ -341,6 +325,7 @@ class DemoAPI{
   if(role==='condutor'&&!this.sys){if(prof.company_id!==v.company_id)throw E('Este veículo não pertence à sua empresa');}
   Object.assign(n,{driver_name:prof.name,driver_email:prof.email||null,company_id:v.company_id});const pre='nosbeb/'+n.vehicle_id+'/';
   for(const [k] of NITEMS){const it=(n.items||{})[k];if(!it||!['conforme','nao_conforme','na'].includes(it.status))throw E('Item sem avaliação: '+k);if(it.status==='na'&&!NA_OK.includes(k))throw E('Este item não admite "não se aplica": '+k);if((it.photos||[]).some(p=>!String(p).startsWith(pre)))throw E('Foto de item fora do caminho do veículo')}
+  for(const k of ['frente','lat_esq','traseira','lat_dir'])if(!(n.photos||{})[k]||!String(n.photos[k]).startsWith(pre))throw E('Fotografe as 4 vistas externas do veículo (frente, lateral esquerda, traseira e lateral direita)');
   if(!n.water_photo||!n.oil_photo||!String(n.water_photo).startsWith(pre)||!String(n.oil_photo).startsWith(pre))throw E('Fotos da água e do óleo são obrigatórias');
   if(n.fuel_ok==null)throw E('Informe se o nível de combustível está adequado (mínimo 1/4)');
   n.km_declared=n.km;if(Number(n.km)<Number(v.km_current)){n.km_flag='menor_que_ultimo';if(!String(n.km_justification||'').trim())throw E(`Quilometragem menor que a última registrada (${v.km_current} km): informe a justificativa`)}
@@ -358,6 +343,8 @@ class DemoAPI{
  notifyRole(role,type,title,body,link,entity,priority,dedup){this.t.profiles.filter(p=>p.role===role&&p.active).forEach(p=>this.notify(p.id,type,title,body,link,entity,priority,dedup?dedup+':'+p.id:null))}
  /* ---- regras de reserva (espelho de trg_booking_guard) ---- */
  bookingGuard(op,n,o){const role=this.sys?'':this.role(),uid=this.cur,top=this.depth===0&&!this.sys;
+  if(top&&op==='I'&&role==='recepcao')throw E('A recepção não faz reservas: recebe as chaves e aprova viagens com programação inferior a 100 km');
+  if(top&&n.vehicle_id&&(op==='I'||n.vehicle_id!==o?.vehicle_id)&&this.isFleetV(n.vehicle_id))throw E('Veículos da frota NOSBEB são de uso individual e não são reservados');
   if(top&&role==='condutor'){
    if(op==='I'){if(n.driver_id!==uid)throw E('Condutor só pode solicitar reservas para si');if(this.t.companies.find(c=>c.id===this.P(uid)?.company_id)?.fleet_controls)throw E('Motoristas da NOSBEB não fazem reservas de veículos: apenas registram o checklist');Object.assign(n,{status:'solicitada',vehicle_id:null,approved_by:null,approved_at:null,key_out_at:null,key_in_at:null,manager_comment:null,rejected_reason:null})}
    else{if(o.driver_id!==uid)throw E('Sem permissão');for(const f of['driver_id','vehicle_id','key_out_at','key_in_at','approved_by','rejected_reason','manager_comment'])if((n[f]??null)!==(o[f]??null))throw E('Campo reservado ao gestor/recepção');
@@ -437,10 +424,10 @@ class DemoAPI{
   if(fn==='manager_contacts')return this.t.profiles.filter(p=>p.role==='gestor'&&p.active).map(p=>({id:p.id,name:p.name,phone:p.phone}));
   if(fn==='reference_inspection'){if(!(S||this.t.bookings.some(b=>b.vehicle_id===a.p_vehicle&&b.driver_id===this.cur&&['aprovada','chave_retirada','em_uso','devolvido'].includes(b.status))))throw E('Sem permissão para a referência deste veículo');
    const r=this.t.inspections.filter(i=>i.vehicle_id===a.p_vehicle&&Object.keys(i.photos||{}).length&&(!a.p_kind||i.kind===a.p_kind)&&(!a.p_before||i.created_at<a.p_before)).sort((x,y)=>y.created_at.localeCompare(x.created_at))[0];
-   return r?[{id:r.id,created_at:r.created_at,kind:r.kind,photos:clone(r.photos)}]:[]}
-  if(fn==='suggest_vehicles'){if(!S)throw E('Apenas gestor/recepção');const b=this.B(a.p_booking);return suggestCompute(b,this.t.vehicles,this.t.bookings)}
+   if(r)return[{id:r.id,created_at:r.created_at,kind:r.kind,photos:clone(r.photos)}];const vb=this.V(a.p_vehicle);return vb&&Object.keys(vb.base_photos||{}).length&&!a.p_before?[{id:null,created_at:vb.base_photos_at,kind:'base',photos:clone(vb.base_photos)}]:[]}
+  if(fn==='vehicle_base_photos'){const vb=this.V(a.p_vehicle),me=this.P(this.cur);return vb&&Object.keys(vb.base_photos||{}).length&&(S||(this.isFleetV(vb.id)&&me?.company_id===vb.company_id))?[{photos:clone(vb.base_photos),created_at:vb.base_photos_at}]:[]}
+  if(fn==='suggest_vehicles'){if(!S)throw E('Apenas gestor/recepção');const b=this.B(a.p_booking);return suggestCompute(b,this.t.vehicles.filter(v=>!this.isFleetV(v.id)),this.t.bookings)}
   if(fn==='nosbeb_my_vehicles'){const me=this.P(this.cur);if(!this.role())return[];return this.t.vehicles.filter(v=>v.status!=='inativo'&&this.isFleetV(v.id)&&(this.isS()||me.company_id===v.company_id)).sort((a,b)=>a.plate.localeCompare(b.plate)).map(v=>({id:v.id,plate:v.plate,model:v.model,color:v.color,company_name:this.t.companies.find(c=>c.id===v.company_id)?.name,km_current:v.km_current}))}
-  if(fn==='fuel_daily_report_preview'){if(!this.isG())throw E('Apenas o gestor de frota');return fuelReport(this.t,a.p_day)}
   if(fn==='run_periodic_alerts'){if(this.cur&&!S)return 0;return this.periodic()}
   if(fn==='set_user_pin'){if(!this.isG())throw E('Apenas o gestor pode redefinir PIN');this.pins[a.p_user]=a.p_pin;return null}
   if(fn==='no_profiles')return!this.t.profiles.length;throw E('Função desconhecida: '+fn)}
@@ -505,9 +492,8 @@ async function loadData(){
  Object.assign(D,{vehicles:v||[],profiles:p||[],bookings:[...bm.values()].sort((a,b)=>a.start_at.localeCompare(b.start_at)),notifications:nt||[]});
  if(!isS()){try{D.managers=await api.rpc('manager_contacts')}catch(e){D.managers=[]}}
  {const [co,ck]=await Promise.all([api.select('companies',{order:'name'}),api.select('nosbeb_checklists',{order:'created_at',desc:true,limit:300})]);Object.assign(D,{companies:co,checklists:ck})}   // motorista: RLS devolve só os próprios checklists
- if(isS()){const [fr]=await Promise.all([api.select('fuel_requests',{order:'created_at',desc:true,limit:200})]);Object.assign(D,{fuelReq:fr});
-  if(!isG())D.refuels=await api.select('refuels',{order:'created_at',desc:true,limit:500})}      // recepção: só a frota NOSBEB (RLS)
- else{try{D.myFleet=await api.rpc('nosbeb_my_vehicles')}catch(e){D.myFleet=[]}}
+ if(isG()){D.fuelReq=await api.select('fuel_requests',{order:'created_at',desc:true,limit:200})}
+ else if(!isS()){try{D.myFleet=await api.rpc('nosbeb_my_vehicles')}catch(e){D.myFleet=[]}}
  if(isG()){const s7=new Date(Date.now()-7*864e5).toISOString();
   const [dm,r,m,ri,mp]=await Promise.all([api.select('damages',{f:[['in','status',['pendente','confirmada']]],order:'created_at',desc:true,limit:300}),api.select('refuels',{order:'created_at',desc:true,limit:500}),
    api.select('maintenance',{order:'done_at',desc:true,limit:200}),api.select('inspections',{f:[['gte','created_at',s7]],order:'created_at',desc:true,limit:200}),api.select('maintenance_periods',{order:'started_at',desc:true,limit:100})]);
@@ -561,6 +547,7 @@ const missingSafety=v=>SAFETY.filter(([k])=>v[k]===false).map(s=>s[1]);
 const stBadge=(st,txt)=>`<span class="badge ${st==='bad'?'b-bad':st==='warn'?'b-warn':st==='na'?'b-mut':'b-ok'}">${txt}</span>`;
 const stShort=m=>stBadge(m.st,m.st==='ok'?'OK':m.st==='na'?'-':m.st==='bad'?'Vencida':'Próxima');
 function vehNow(v){const now=Date.now();if(v.status==='manutencao')return[`Em manutenção${v.maintenance_expected_return?' · retorno '+fmtDT(v.maintenance_expected_return)+(new Date(v.maintenance_expected_return)<now?' (atrasado)':''):''}`,v.maintenance_expected_return&&new Date(v.maintenance_expected_return)<now?'b-bad':'b-mut'];if(v.status==='inativo')return['Inativo','b-mut'];
+ if(isFleetV(v))return['Frota NOSBEB · uso individual','b-info'];   // não é reservado: ferramenta de trabalho de motorista específico
  const cur=D.bookings.find(b=>b.vehicle_id===v.id&&['chave_retirada','em_uso'].includes(b.status));if(cur)return[`Em uso · ${pName(cur.driver_id)} até ${fmtT(cur.end_at)}`,new Date(cur.end_at)<now?'b-bad':'b-warn'];
  const dv=D.bookings.find(b=>b.vehicle_id===v.id&&b.status==='devolvido');if(dv)return['No pátio · chave pendente','b-info'];
  const nx=D.bookings.find(b=>b.vehicle_id===v.id&&b.status==='aprovada'&&new Date(b.end_at)>now);if(nx&&new Date(nx.start_at)-now<3*36e5)return[`Disponível · reservado às ${fmtT(nx.start_at)}`,'b-info'];
@@ -590,23 +577,19 @@ function hydrate(){document.querySelectorAll('img[data-path]:not([src])').forEac
 function fuelSeg(cur,fn){return`<div class="seg">${FUEL.map(f=>`<button class="${cur===f.v?'on':''}" onclick="${fn}(${f.v})">${f.l}</button>`).join('')}</div>`}
 
 /* ======================= navegação ======================= */
-function navItems(){const n=[];if(isNosbebDriver())return[['nosbeb','🚚 NOSBEB']];   // motorista NOSBEB: apenas o checklist, sem reservas
- if(isG())n.push(['painel','📊 Painel'],['solicitacoes','📥 Solicitações'+(pendReq()?` (${pendReq()})`:'')]);
- n.push(['inicio','🏠 Início'],['solicitar','📝 Solicitar veículo'],['minhas','🗒 Minhas reservas']);
- if(isS())n.push(['chaves','🔑 Chaves'],['agenda','🗓 Agenda']);
- if(ME.role==='recepcao')n.push(['solicitacoes','📥 Viagens < 100 km'+(pendRecv()?` (${pendRecv()})`:'')],['abastecimento','⛽ Abastecimento NOSBEB']);
- if(isS())n.push(['checklist','📋 Checklist NOSBEB']);
- if(isS())n.push(['rodizio','🚦 Rodízio SP'],['empresas','🏢 Empresas']);
- if(isG()){const pd=pendDmg();n.push(['avarias','⚠ Avarias'+(pd?` (${pd})`:'')],['abastecimento','⛽ Abastecimento'],['manutencao','🔧 Manutenção'],['veiculos','🚗 Veículos'],['usuarios','👥 Usuários'],['relatorios','📈 Relatórios'],['divergencias','🔍 Divergências'])}
- return n}
+function navItems(){if(isNosbebDriver())return[['nosbeb','🚚 NOSBEB']];   // motorista NOSBEB: apenas o checklist, sem reservas
+ if(isG())return[['painel','📊 Painel'],['solicitacoes','📥 Solicitações'+(pendReq()?` (${pendReq()})`:'')],['agenda','🗓 Agenda'],['chaves','🔑 Chaves'],['veiculos','🚗 Veículos'],['empresas','🏢 Empresas'],
+  ['abastecimento','⛽ Abastecimento'],['checklist','📋 Checklist NOSBEB'],['avarias','⚠ Avarias'+(pendDmg()?` (${pendDmg()})`:'')],['manutencao','🔧 Manutenção'],['divergencias','🔍 Divergências'],['relatorios','📈 Relatórios'],['usuarios','👥 Usuários']];
+ if(ME.role==='recepcao')return[['inicio','🏠 Início'],['chaves','🔑 Chaves'],['agenda','🗓 Agenda'],['solicitacoes','✅ Aprovações'+(pendRecv()?` (${pendRecv()})`:'')]];
+ return[['inicio','🏠 Início'],['solicitar','📝 Solicitar veículo'],['minhas','🗒 Minhas reservas']]}
 function go(v,arg){if(PK&&view==='vistoria'&&v!=='vistoria'){if(!confirm('Sair e descartar a vistoria em andamento?'))return;PK=null}
  view=v;VARG=arg;render();window.scrollTo(0,0)}
 const VIEWS={};
 function render(){if(!ME)return renderLogin();
  $('#nav').style.display='flex';$('#nav').innerHTML=navItems().map(([k,l])=>`<button class="${view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
  $('#meBox').innerHTML=`${esc(ME.name)}<br><span style="color:#94a3b8">${ROLE[ME.role]} ▾</span>`;$('#meBox').onclick=meMenu;$('#bell').style.display='block';
- const GONLY=['divergencias'],SONLY=['rodizio','empresas','abastecimento','solicitacoes','checklist'],NBONLY=['nosbeb'];   // telas restritas ao gestor / à equipe (gestor + recepção)
- $('#main').innerHTML=(isNosbebDriver()&&!['nosbeb','chkForm'].includes(view)?VIEWS.nosbeb:(GONLY.includes(view)&&!isG())||(SONLY.includes(view)&&!isS())||(NBONLY.includes(view)&&!isNosbebDriver())||(view==='chkForm'&&!isS()&&!isNosbebDriver())?VIEWS.inicio:(VIEWS[view]||VIEWS.inicio))();hydrate();const a=AFTER;AFTER=[];a.forEach(f=>f())}
+ const GONLY=['divergencias','empresas','abastecimento','checklist','avarias','manutencao','veiculos','usuarios','relatorios','painel','hist'],SONLY=['solicitacoes','agenda','chaves'],UONLY=['solicitar','minhas'],NBONLY=['nosbeb'];   // telas restritas ao gestor / à equipe (gestor + recepção)
+ $('#main').innerHTML=(isNosbebDriver()&&!['nosbeb','chkForm'].includes(view)?VIEWS.nosbeb:isG()&&['inicio',...UONLY].includes(view)?VIEWS.painel:(GONLY.includes(view)&&!isG())||(SONLY.includes(view)&&!isS())||(UONLY.includes(view)&&isS())||(NBONLY.includes(view)&&!isNosbebDriver())||(view==='chkForm'&&!isS()&&!isNosbebDriver())?VIEWS.inicio:(VIEWS[view]||VIEWS.inicio))();hydrate();const a=AFTER;AFTER=[];a.forEach(f=>f())}
 function meMenu(){const perm=('Notification' in window)?Notification.permission:'indisponível';
  openModal(`<h3>${esc(ME.name)}</h3><p class="mut small">Cartão ${esc(ME.card)} · ${ROLE[ME.role]}${ME.cnh_validade?` · CNH válida até ${fmtD(ME.cnh_validade)}`:''}</p>
  <div class="card"><b>Notificações no celular</b><p class="small mut">Receba avisos de reservas, retiradas, devoluções e manutenções mesmo com o app fechado. Status: <b>${perm==='granted'?'ativadas':perm==='denied'?'bloqueadas no navegador':'não ativadas'}</b>.</p>
@@ -640,7 +623,7 @@ async function enablePush(){
   await api.savePush(sub);toast('Notificações no celular ativadas ✔');closeModal()}catch(e){toast('Falha ao ativar push: '+e.message,6000)}}
 async function startSession(){await loadData();api.subscribeNotifs(ME.id,onNotif);clearInterval(alertTimer);
  if(isS()){const run=()=>api.rpc('run_periodic_alerts').then(n=>{if(n)loadData().then(()=>{updateBell();if(!PK&&!$('#modal').classList.contains('on'))render()})}).catch(()=>{});run();alertTimer=setInterval(run,CONFIG.ALERTS_FALLBACK_MIN*6e4)}
- view=isG()?'painel':ME.role==='recepcao'?'chaves':isNosbebDriver()?'nosbeb':'inicio';render();
+ view=isG()?'painel':isNosbebDriver()?'nosbeb':'inicio';render();
  const pl=sessionStorage.getItem('fc_link');if(pl){sessionStorage.removeItem('fc_link');navigate(pl)}}      // link do QR Code aberto antes do login
 
 /* ======================= login ======================= */
@@ -695,7 +678,7 @@ async function openBooking(id){const b=D.bookings.find(x=>x.id===id);if(!b)retur
  <div class="row">${bActions(b)}${isS()&&b.status==='aprovada'&&Date.now()>+new Date(b.end_at)?`<button class="btn sm" onclick="noShow('${b.id}')">Não compareceu</button>`:''}</div>`)}
 
 /* ======================= INÍCIO ======================= */
-VIEWS.inicio=()=>{const now=Date.now(),my=D.bookings.filter(b=>b.driver_id===ME.id);
+VIEWS.inicioCond=()=>{const now=Date.now(),my=D.bookings.filter(b=>b.driver_id===ME.id);
  const act=my.filter(b=>canPickup(b)||['chave_retirada','em_uso','devolvido'].includes(b.status));
  const pend=my.filter(b=>b.status==='solicitada'),next=my.filter(b=>b.status==='aprovada'&&!act.includes(b)&&+new Date(b.end_at)>now);
  const cnh=daysTo(ME.cnh_validade);
@@ -772,7 +755,7 @@ VIEWS.minhas=()=>{const my=D.bookings.filter(b=>b.driver_id===ME.id).sort((a,b)=
 /* ======================= SOLICITAÇÕES (gestor) ======================= */
 VIEWS.solicitacoes=()=>{const L=D.bookings.filter(b=>b.status==='solicitada'&&(isG()||receptionEligible(b))).sort((a,b)=>a.start_at.localeCompare(b.start_at));
  const recent=D.bookings.filter(b=>b.approved_at&&Date.now()-new Date(b.approved_at)<2*864e5).sort((a,b)=>b.approved_at.localeCompare(a.approved_at)).slice(0,8);
- return`<h2>${isG()?'Solicitações pendentes':'Viagens com programação inferior a 100 km a aprovar'} (${L.length})</h2>${isG()?'':'<div class="infobox" style="margin:0 0 12px">A recepção recebe e aprova as viagens com <b>programação inferior a 100 km</b>. As demais solicitações são decididas pelo gestor de frota, que também é avisado das aprovações feitas aqui.</div>'}${L.map(b=>`<div class="card"><div class="row sp"><div><b>${esc(pName(b.driver_id))}</b> ${bBadge(b)}<br><span class="small">${fmtDT(b.start_at)} → ${fmtDT(b.end_at)} · 📍 ${esc(b.destination)} · ${esc(b.purpose||'')}</span><br><span class="small mut">${reqLine(b)}${b.notes?' · '+esc(b.notes):''}</span>
+ return`<h2>${isG()?'Solicitações pendentes':'Aprovações'} (${L.length})</h2>${isG()?'':'<div class="infobox" style="margin:0 0 12px">A recepção recebe e aprova as viagens com <b>programação inferior a 100 km</b>. As demais solicitações são decididas pelo gestor de frota, que também é avisado das aprovações feitas aqui.</div>'}${L.map(b=>`<div class="card"><div class="row sp"><div><b>${esc(pName(b.driver_id))}</b> ${bBadge(b)}<br><span class="small">${fmtDT(b.start_at)} → ${fmtDT(b.end_at)} · 📍 ${esc(b.destination)} · ${esc(b.purpose||'')}</span><br><span class="small mut">${reqLine(b)}${b.notes?' · '+esc(b.notes):''}</span>
   ${b.adjust_requested_at?`<div class="warnbox">Ajuste pedido em ${fmtDT(b.adjust_requested_at)}: ${esc(b.manager_comment||'')}</div>`:''}</div><button class="btn pri" onclick="openDecision('${b.id}')">Analisar e decidir</button></div></div>`).join('')||'<div class="card mut">Nenhuma solicitação pendente. 🎉</div>'}
  ${recent.length?`<h3>Aprovadas recentemente</h3>${recent.map(b=>bCard(b)).join('')}`:''}`};
 let DEC=null;
@@ -812,7 +795,7 @@ VIEWS.chaves=()=>{const t=today(),now=Date.now(),B=D.bookings;
   return`<div class="card"><div class="row sp"><div><b>${esc(v?.plate||'')}</b> · ${esc(v?.model||'')} ${bBadge(b)}<br><span class="small">${fmtDT(b.start_at)}–${fmtT(b.end_at)} (previsto) · <b>${esc(d?.name||'')}</b> (cartão ${esc(d?.card||'')}) · 📍 ${esc(b.destination)}</span></div><div class="row">${act}</div></div>${fl}</div>`};
  return`<div class="row sp"><h2>Chaves · hoje</h2><button class="btn sm" onclick="refresh()">↻ Atualizar</button></div>
  <p class="small mut">O horário das reservas é estimativa: a chave pode ser retirada a qualquer hora do dia da reserva. A chave reserva fica com o gestor de frota, não na recepção.</p>
- ${ME.role==='recepcao'&&pendRecv()?`<div class="warnbox" style="cursor:pointer;margin:0 0 12px" onclick="go('solicitacoes')"><b>📥 ${pendRecv()} viagem(ns) com menos de 100 km aguardando a sua aprovação</b> · toque para analisar</div>`:''}
+ ${ME.role==='recepcao'&&pendRecv()?`<div class="warnbox" style="cursor:pointer;margin:0 0 12px" onclick="go('solicitacoes')"><b>📥 ${pendRecv()} aprovação(ões) pendente(s): viagens com menos de 100 km</b> · toque para analisar</div>`:''}
  <h3>Aguardando retirada (${wait.length})</h3>${wait.map(b=>row(b,`<button class="btn pri sm" onclick="keyOut('${b.id}')">🔑 Entregar chave</button>${now>+new Date(b.end_at)?`<button class="btn sm" onclick="noShow('${b.id}')">Não compareceu</button>`:''}`)).join('')||'<p class="mut small">Nenhuma.</p>'}
  <h3>Chave com o condutor (${out.length})</h3>${out.map(b=>row(b,`${P(b.driver_id)?.phone?`<a class="btn sm" href="tel:${esc(P(b.driver_id).phone)}">📞</a>`:''}<button class="btn sm" onclick="keyIn('${b.id}')">Receber chave</button>`)).join('')||'<p class="mut small">Nenhuma.</p>'}
  <h3>Devolvidos, chave pendente (${back.length})</h3>${back.map(b=>row(b,`<button class="btn okb sm" onclick="keyIn('${b.id}')">✔ Receber chave</button>`)).join('')||'<p class="mut small">Nenhum.</p>'}
@@ -841,23 +824,55 @@ function consumption(v,kmS,fS,kmE,fE){if(kmS==null||fS==null||!v)return null;con
  return{km,expected_l:Math.round(exp*10)/10,observed_l:Math.round(obs*10)/10,flag:obs-exp>tank*.25+2}}
 
 /* ======================= AGENDA (período real × previsto) ======================= */
-VIEWS.agenda=()=>{const day=VARG||today();const d0=new Date(day+'T06:00:00'),d1=new Date(day+'T23:00:00'),span=d1-d0;
- const list=D.bookings.filter(b=>b.vehicle_id&&!['cancelada','recusada'].includes(b.status)&&new Date(b.start_at)<d1&&new Date(realRange(b)[1])>d0);
+/* ======================= GANTT (agenda) com faixas: nenhuma barra fica sobre outra ======================= */
+function ganttHTML(day,vs){const d0=new Date(day+'T06:00:00'),d1=new Date(day+'T23:00:00'),span=d1-d0,LH=34;
  const col={aprovada:'#2563eb',chave_retirada:'#d97706',em_uso:'#d97706',devolvido:'#0891b2',concluido:'#16a34a',nao_compareceu:'#94a3b8'};
- const pct=t=>Math.max(0,Math.min(100,(new Date(t)-d0)/span*100));const nowP=(Date.now()-d0)/span*100;
- return`<div class="row sp"><h2>Agenda</h2><div class="row"><button class="btn sm" onclick="go('agenda',shiftDay('${day}',-1))">◀</button><input type="date" value="${day}" onchange="go('agenda',this.value)" style="width:auto"><button class="btn sm" onclick="go('agenda',shiftDay('${day}',1))">▶</button><button class="btn pri sm" onclick="AG=null;go('solicitar')">+ Reserva</button></div></div>
- <div class="card tw"><div style="min-width:600px"><div class="tlh">${[6,8,10,12,14,16,18,20,22].map(h=>`<span>${h}h</span>`).join('')}</div>
- ${D.vehicles.filter(v=>v.status!=='inativo').map(v=>{const ms=v.status==='manutencao'?pct(v.maintenance_since||d0):null,me=v.status==='manutencao'?(v.maintenance_expected_return?pct(v.maintenance_expected_return):100):null;
-  return`<div class="tlr"><div class="lb" title="${esc(v.model)}"><b>${esc(v.plate)}</b><br><span class="mut">${esc(v.model)}</span></div><div class="tl">
+ const pct=t=>Math.max(0,Math.min(100,(new Date(t)-d0)/span*100)),nowP=(Date.now()-d0)/span*100;
+ const list=D.bookings.filter(b=>b.vehicle_id&&!['cancelada','recusada'].includes(b.status)&&new Date(b.start_at)<d1&&new Date(realRange(b)[1])>d0);
+ return`<div class="tlh">${[6,8,10,12,14,16,18,20,22].map(h=>`<span>${h}h</span>`).join('')}</div>`+vs.map(v=>{
+  const ms=v.status==='manutencao'?pct(v.maintenance_since||d0):null,me=v.status==='manutencao'?(v.maintenance_expected_return?pct(v.maintenance_expected_return):100):null;
+  // cada reserva ocupa o intervalo que inclui o contorno previsto e a barra real; reservas que se tocam vão para faixas diferentes
+  const its=list.filter(b=>b.vehicle_id===v.id).map(b=>{const [rs,re]=realRange(b),planned=['aprovada','nao_compareceu'].includes(b.status),bs=planned?pct(b.start_at):pct(rs),be=planned?pct(b.end_at):pct(re);
+   return{b,rs,re,planned,bs,be,a:Math.min(pct(b.start_at),bs),z:Math.max(pct(b.end_at),be)}}).sort((x,y)=>x.a-y.a||x.z-y.z);
+  const ends=[];its.forEach(it=>{let l=ends.findIndex(e=>e<=it.a+.01);if(l<0){l=ends.length;ends.push(0)}ends[l]=it.z;it.lane=l});
+  const H=Math.max(1,ends.length)*LH;
+  return`<div class="tlr"><div class="lb" title="${esc(v.model)}"><b>${esc(v.plate)}</b><br><span class="mut">${esc(v.model)}</span></div><div class="tl" style="height:${H}px">
   ${ms!=null&&me>ms?`<div class="mnt" style="left:${ms}%;width:${me-ms}%">🔧 manutenção${v.maintenance_expected_return?' até '+fmtDT(v.maintenance_expected_return):''}</div>`:''}
-  ${list.filter(b=>b.vehicle_id===v.id).map(b=>{const [rs,re]=realRange(b),late=b.status==='em_uso'&&new Date(b.end_at)<Date.now();
-   return`<div class="plan" style="left:${pct(b.start_at)}%;width:${pct(b.end_at)-pct(b.start_at)}%" title="Previsto ${fmtT(b.start_at)}–${fmtT(b.end_at)}"></div>`
-   +(['aprovada','nao_compareceu'].includes(b.status)?`<div class="bar" onclick="openBooking('${b.id}')" style="left:${pct(b.start_at)}%;width:${pct(b.end_at)-pct(b.start_at)}%;background:${col[b.status]};opacity:.55" title="${esc(pName(b.driver_id))} (previsto)">${esc(pName(b.driver_id).split(' ')[0])}</div>`
-    :`<div class="bar" onclick="openBooking('${b.id}')" style="left:${pct(rs)}%;width:${pct(re)-pct(rs)}%;background:${late?'#dc2626':col[b.status]}" title="${esc(pName(b.driver_id))} · real ${fmtT(rs)}–${b.returned_at?fmtT(re):'agora'}">${esc(pName(b.driver_id).split(' ')[0])}</div>`)}).join('')}
-  ${nowP>0&&nowP<100?`<div class="now" style="left:${nowP}%"></div>`:''}</div></div>`}).join('')}</div>
- <div class="small mut" style="margin-top:6px">Contorno tracejado = período previsto · barra sólida = uso real (de retirada até devolução) · 🟦 aprovada · 🟧 em uso · 🟩 concluída · 🟥 atrasado · hachurado = manutenção</div></div>
+  ${its.map(({b,rs,re,planned,lane})=>{const late=b.status==='em_uso'&&new Date(b.end_at)<Date.now(),top=lane*LH;
+   return`<div class="plan" style="left:${pct(b.start_at)}%;width:${pct(b.end_at)-pct(b.start_at)}%;top:${top+2}px;height:${LH-4}px;bottom:auto" title="Previsto ${fmtT(b.start_at)}–${fmtT(b.end_at)}"></div>`
+   +(planned?`<div class="bar" onclick="openBooking('${b.id}')" style="left:${pct(b.start_at)}%;width:${pct(b.end_at)-pct(b.start_at)}%;top:${top+6}px;height:${LH-12}px;bottom:auto;background:${col[b.status]};opacity:.55" title="${esc(pName(b.driver_id))} (previsto)">${esc(pName(b.driver_id).split(' ')[0])}</div>`
+    :`<div class="bar" onclick="openBooking('${b.id}')" style="left:${pct(rs)}%;width:${pct(re)-pct(rs)}%;top:${top+6}px;height:${LH-12}px;bottom:auto;background:${late?'#dc2626':col[b.status]}" title="${esc(pName(b.driver_id))} · real ${fmtT(rs)}–${b.returned_at?fmtT(re):'agora'}">${esc(pName(b.driver_id).split(' ')[0])}</div>`)}).join('')}
+  ${nowP>0&&nowP<100?`<div class="now" style="left:${nowP}%"></div>`:''}</div></div>`}).join('')
+  +`<div class="small mut" style="margin-top:6px">Contorno tracejado = período previsto · barra sólida = uso real (de retirada até devolução) · 🟦 aprovada · 🟧 em uso · 🟩 concluída · 🟥 atrasado · hachurado = manutenção · reservas que se sobrepõem aparecem em linhas separadas</div>`}
+const ganttVehicles=()=>D.vehicles.filter(v=>v.status!=='inativo'&&!isFleetV(v)).sort((a,b)=>a.plate.localeCompare(b.plate));   // a frota NOSBEB é de uso individual e não aparece na agenda
+VIEWS.agenda=()=>{const day=VARG||today(),d1=new Date(day+'T23:00:00'),d0=new Date(day+'T06:00:00');
+ const list=D.bookings.filter(b=>b.vehicle_id&&!isFleetV(V(b.vehicle_id))&&!['cancelada','recusada'].includes(b.status)&&new Date(b.start_at)<d1&&new Date(realRange(b)[1])>d0);
+ return`<div class="row sp"><h2>Agenda</h2><div class="row"><button class="btn sm" onclick="go('agenda',shiftDay('${day}',-1))">◀</button><input type="date" value="${day}" onchange="go('agenda',this.value)" style="width:auto"><button class="btn sm" onclick="go('agenda',shiftDay('${day}',1))">▶</button></div></div>
+ <div class="card tw"><div style="min-width:600px">${ganttHTML(day,ganttVehicles())}</div></div>
  ${list.sort((a,b)=>a.start_at.localeCompare(b.start_at)).map(b=>bCard(b)).join('')||'<p class="mut">Nenhuma reserva neste dia.</p>'}`};
+
+/* ======================= INÍCIO DA RECEPÇÃO ======================= */
+VIEWS.inicioRecep=()=>{const t=today(),day=typeof VARG==='string'&&VARG?VARG:t,now=Date.now(),dow=new Date(t+'T12:00:00').getDay()||7,mon=addDays(t,1-dow),sun=addDays(mon,6);
+ const real=b=>b.vehicle_id&&!isFleetV(V(b.vehicle_id)),B=D.bookings.filter(real);
+ const week=B.filter(b=>['aprovada','chave_retirada','em_uso','devolvido','concluido'].includes(b.status)&&localDate(b.start_at)>=mon&&localDate(b.start_at)<=sun).sort((a,b)=>a.start_at.localeCompare(b.start_at));
+ const days=[...new Set(week.map(b=>localDate(b.start_at)))];
+ const WDS=['dom','seg','ter','qua','qui','sex','sáb'];
+ const keys=B.filter(b=>b.status==='aprovada'&&[t,addDays(t,1)].includes(localDate(b.start_at))).sort((a,b)=>a.start_at.localeCompare(b.start_at));
+ const back=B.filter(b=>b.status==='devolvido');
+ const kst=b=>{const dt=new Date(b.start_at)-now;return dt<-15*6e4?['b-bad','Atrasada']:dt<=60*6e4?['b-warn',dt<=0?'Agora':'Em breve']:['b-mut','Programada']};
+ return`<h2>Início</h2>
+ ${pendRecv()?`<div class="warnbox" style="cursor:pointer" onclick="go('solicitacoes')"><b>📥 ${pendRecv()} aprovação(ões) pendente(s)</b> · viagens com menos de 100 km aguardando você</div>`:''}
+ <div class="card"><div class="row sp"><h3 style="margin:0">🔔 Entrega de chaves</h3><button class="btn sm" onclick="refresh()">↻</button></div>
+ <p class="small mut">Programação de hoje e de amanhã. O horário é uma estimativa: a chave pode ser entregue a qualquer hora do dia da reserva.</p>
+ ${keys.map(b=>{const v=V(b.vehicle_id),d=P(b.driver_id),k=kst(b);return`<div class="al row sp"><span><span class="badge ${k[0]}">${k[1]}</span> <b>${localDate(b.start_at)===t?'Hoje':'Amanhã'} ${fmtT(b.start_at)}</b> · ${esc(v?.plate||'')} ${esc(v?.model||'')}<br><span class="small mut">${esc(d?.name||'')} · 📍 ${esc(b.destination)} · volta ${fmtT(b.end_at)}</span></span>${localDate(b.start_at)===t?`<button class="btn pri sm" onclick="keyOut('${b.id}')">🔑 Entregar chave</button>`:''}</div>`}).join('')||'<p class="small mut">Nenhuma entrega de chave programada para hoje ou amanhã.</p>'}
+ ${back.length?`<div class="small" style="margin-top:8px"><b>Aguardando receber a chave (${back.length}):</b> ${back.map(b=>esc(V(b.vehicle_id)?.plate||'')+' ('+esc(pName(b.driver_id))+')').join(' · ')}</div>`:''}</div>
+ <div class="card"><h3 style="margin-top:0">🗓 Reservas programadas da semana (${fmtD(mon)} a ${fmtD(sun)})</h3>
+ ${days.map(d=>`<div class="small" style="margin-top:8px"><b>${WDS[new Date(d+'T12:00:00').getDay()]} ${fmtD(d).slice(0,5)}${d===t?' · hoje':''}</b></div>`+week.filter(b=>localDate(b.start_at)===d).map(b=>{const v=V(b.vehicle_id);return`<div class="al" style="cursor:pointer" onclick="openBooking('${b.id}')">${fmtT(b.start_at)}–${fmtT(b.end_at)} · <b>${esc(v?.plate||'')}</b> ${esc(v?.model||'')} · ${esc(pName(b.driver_id))} · 📍 ${esc(b.destination)} ${bBadge(b)}</div>`}).join('')).join('')||'<p class="small mut">Nenhuma reserva programada nesta semana.</p>'}</div>
+ <div class="card tw"><div class="row sp"><h3 style="margin:0">Agenda dos veículos</h3><div class="row"><button class="btn sm" onclick="go('inicio',shiftDay('${day}',-1))">◀</button><input type="date" value="${day}" onchange="go('inicio',this.value)" style="width:auto"><button class="btn sm" onclick="go('inicio',shiftDay('${day}',1))">▶</button></div></div>
+ <div style="min-width:600px;margin-top:8px">${ganttHTML(day,ganttVehicles())}</div></div>`};
+
 const shiftDay=(d,n)=>addDays(d,n);
+VIEWS.inicio=()=>ME.role==='recepcao'?VIEWS.inicioRecep():VIEWS.inicioCond();
 
 /* ======================= visão computacional local (v3) =======================
    Comparação de fotos de vistoria:
@@ -1175,7 +1190,7 @@ async function compareUse(bid){busy(true);try{const ins=await api.select('inspec
 function alerts(){const a=[],now=Date.now(),R=(s,t,to)=>a.push([s,t,to]);
  if(pendReq())R('bad',`📥 ${pendReq()} solicitação(ões) de reserva aguardando sua aprovação`,'solicitacoes');
  const pd=pendDmg();if(pd)R('bad',`⚠ ${pd} possível(is) avaria(s) aguardando sua revisão`,'avarias');
- D.bookings.filter(b=>b.status==='aprovada'&&b.sp_rodizio&&b.vehicle_id&&new Date(b.end_at)>now).forEach(b=>{const v=V(b.vehicle_id),r=rodizioCheck(v?.plate,b.start_at,b.end_at,v?.rodizio_exempt);if(r.restricted)R('bad',`🚦 Rodízio SP: reserva de ${pName(b.driver_id)} em ${fmtDT(b.start_at)} usa ${v.plate} (final ${r.digit}), com restrição no período`,'rodizio')});
+ D.bookings.filter(b=>b.status==='aprovada'&&b.sp_rodizio&&b.vehicle_id&&new Date(b.end_at)>now).forEach(b=>{const v=V(b.vehicle_id),r=rodizioCheck(v?.plate,b.start_at,b.end_at,v?.rodizio_exempt);if(r.restricted)R('bad',`🚦 Rodízio SP: reserva de ${pName(b.driver_id)} em ${fmtDT(b.start_at)} usa ${v.plate} (final ${r.digit}), com restrição no período`,'agenda')});
  {const due=lastDue(today());NCHK().forEach(v=>{if(!D.checklists.some(k=>k.vehicle_id===v.id&&k.due_date===due))R(due<today()?'bad':'warn',`📋 ${v.plate}: checklist NOSBEB de ${fmtD(due)} ${due<today()?'atrasado':'pendente hoje'}`,'checklist')})}
  pendFuel().forEach(f=>R('bad',`⛽ ${V(f.vehicle_id)?.plate||''}: o checklist indicou combustível abaixo de 1/4 (solicitar abastecimento)`,'abastecimento'));
  D.vehicles.filter(v=>v.status!=='inativo').forEach(v=>{const f=fuelInfo(v);if(f.st!=='ok')R(f.st,`⛽ ${v.plate}: ${f.msg}`,'abastecimento');
@@ -1197,7 +1212,7 @@ function alerts(){const a=[],now=Date.now(),R=(s,t,to)=>a.push([s,t,to]);
 VIEWS.painel=()=>{const t=today(),vs=D.vehicles.filter(v=>v.status!=='inativo'),al=alerts();
  return`<h2>Painel do gestor de frota</h2><div class="grid g4">
  <div class="card stat" onclick="go('solicitacoes')" style="cursor:pointer"><b style="color:${pendReq()?'var(--bad)':'inherit'}">${pendReq()}</b><span>Solicitações pendentes</span></div>
- <div class="card stat"><b>${vs.filter(v=>vehNow(v)[0].startsWith('Disponível')).length}/${vs.length}</b><span>Veículos disponíveis</span></div>
+ <div class="card stat"><b>${vs.filter(v=>!isFleetV(v)&&vehNow(v)[0].startsWith('Disponível')).length}/${vs.filter(v=>!isFleetV(v)).length}</b><span>Veículos disponíveis (reserváveis)</span></div>
  <div class="card stat"><b>${D.bookings.filter(b=>['chave_retirada','em_uso'].includes(b.status)).length}</b><span>Em uso agora</span></div>
  <div class="card stat"><b>${D.bookings.filter(b=>localDate(b.start_at)===t&&ACTIVE.concat(['devolvido','concluido']).includes(b.status)).length}</b><span>Reservas hoje</span></div>
  <div class="card stat" onclick="go('abastecimento')" style="cursor:pointer"><b style="color:${vs.some(v=>fuelInfo(v).st==='bad')?'var(--bad)':'inherit'}">${vs.filter(v=>fuelInfo(v).st!=='ok').length}</b><span>Para abastecer</span></div>
@@ -1235,9 +1250,7 @@ VIEWS.abastecimento=()=>{const fleetOnly=!isG(),O={bad:0,warn:1,ok:2};
  const fv=typeof VARG==='string'?VARG:'',series=consumptionSeries(D.refuels),asc=[...series].sort((a,b)=>a.created_at<b.created_at?-1:a.created_at>b.created_at?1:a.id<b.id?-1:1),pk={},kmSince={};
  asc.forEach(r=>{kmSince[r.id]=pk[r.vehicle_id]!=null&&r.km!=null?r.km-pk[r.vehicle_id]:null;if(r.km!=null)pk[r.vehicle_id]=r.km});
  const hist=[...asc].reverse().filter(r=>!fv||r.vehicle_id===fv).slice(0,120),ST=Object.fromEntries(vs.map(([v])=>[v.id,consStats(v,series)]));
- if(isG())AFTER.push(loadEmailStatus);
  return`<div class="row sp"><h2>Abastecimento${fleetOnly?' · frota NOSBEB':''}</h2><button class="btn pri" onclick="refuelForm()">+ Registrar abastecimento</button></div>
- ${isG()?`<div class="card"><div class="row sp"><div><b>✉ E-mail diário de abastecimento (frota NOSBEB)</b><br><span class="small mut" id="emailStatus">Verificando envios...</span></div><button class="btn sm" onclick="openFuelReport()">Ver resumo de hoje</button></div></div>`:''}
  ${fuelReqCard()}
  <div class="infobox" style="margin:0 0 12px">Ponto de abastecimento = <b>1/4 do tanque</b>. Autonomia = nível × capacidade × rendimento (km/L do combustível que está no tanque). Na <b>frota NOSBEB</b>, cada abastecimento registra <b>litros, valor pago e quilometragem</b>; o consumo real (km/L) é calculado entre dois abastecimentos com <b>tanque cheio</b> (abastecimentos parciais entram na soma).</div>
  ${vs.map(([v,f])=>{const c=ST[v.id];return`<div class="card"><div class="row sp"><div><b>${esc(v.plate)} · ${esc(v.model)}</b> ${isFleetV(v)?'<span class="tag2">NOSBEB</span>':''} ${stBadge(f.st,f.st==='bad'?'Abastecer agora':f.st==='warn'?'Programar':'OK')}<br>
@@ -1252,15 +1265,6 @@ VIEWS.abastecimento=()=>{const fleetOnly=!isG(),O={bad:0,warn:1,ok:2};
  <div class="card tw"><div class="row sp"><h3>Histórico de abastecimentos</h3><select style="width:auto" onchange="go('abastecimento',this.value)"><option value="">Todos os veículos</option>${vs.map(([v])=>`<option value="${v.id}" ${fv===v.id?'selected':''}>${esc(v.plate)}</option>`).join('')}</select></div>
  <table><tr><th>Data</th><th>Veículo</th><th>Litros</th><th>Valor pago</th><th>R$/L</th><th>KM</th><th>KM desde o anterior</th><th>km/L</th><th>Por</th></tr>
  ${hist.map(r=>{const ks=kmSince[r.id];return`<tr><td>${fmtDT(r.created_at)}</td><td>${esc(V(r.vehicle_id)?.plate||'')}${r.level_after>=1?' <span class="small mut">(cheio)</span>':''}</td><td>${r.liters??'-'}</td><td>${r.cost!=null?brl(r.cost):'-'}</td><td>${r.liters&&r.cost?brl(r.cost/r.liters):'-'}</td><td>${fmtKm(r.km)}</td><td>${ks==null?'-':ks<0?`<span class="badge b-bad">${ks} km</span>`:ks+' km'}</td><td>${r.kml??'-'}</td><td>${esc(pName(r.created_by))}</td></tr>`}).join('')||'<tr><td colspan="9" class="mut">Nenhum abastecimento.</td></tr>'}</table></div>`};
-async function loadEmailStatus(){const el=$('#emailStatus');if(!el)return;try{const r=await api.select('daily_email_log',{order:'day',desc:true,limit:1});
- el.textContent=r[0]?`Último envio: ${fmtD(r[0].day)} ${r[0].ok?'✔':'⚠ falhou'}${r[0].recipients?' · '+r[0].recipients:''}`:'Nenhum envio registrado ainda: publique e agende a função daily-fuel-email (LEIAME, seção H).'}catch(e){el.textContent='Não foi possível ler o registro de envios.'}}
-function fuelReportHTML(r){const T=r.totals_prev_day,M=r.totals_month,N={abastecer_agora:['b-bad','Abastecer agora'],abastecer_antes_reserva:['b-warn','Abastecer antes da reserva'],programar_abastecimento:['b-warn','Programar abastecimento'],consumo_acima:['b-bad','Consumo acima do esperado'],km_divergente:['b-bad','KM divergente'],solicitacao_checklist:['b-warn','Solicitado no checklist']};
- return`<div class="row sp"><h3>Resumo diário · ${fmtD(r.day)}</h3><button class="btn sm" onclick="closeModal()">✕</button></div><p class="small mut">Mesmo conteúdo do e-mail diário (frota NOSBEB), gerado agora com os dados reais.</p>
- <div class="card"><b>Pendências de abastecimento (${r.pending.length})</b>${r.pending.map(p=>`<div class="al"><span class="badge ${N[p.type][0]}">${N[p.type][1]}</span> <b>${esc(p.plate)}</b> ${esc(p.model)}<br><span class="small">${esc(p.detail)}</span></div>`).join('')||'<p class="small mut">Nenhuma pendência.</p>'}</div>
- <div class="card"><b>Abastecimentos de ontem (${fmtD(r.prev_day)})</b><div class="small mut">${T.refuels} registro(s) · ${Number(T.liters).toLocaleString('pt-BR')} L · ${brl(T.cost)} &nbsp;|&nbsp; mês até ontem: ${M.refuels} registro(s) · ${Number(M.liters).toLocaleString('pt-BR')} L · ${brl(M.cost)}</div>
- ${r.refuels_prev_day.map(x=>`<div class="al small">${fmtT(x.at)} · <b>${esc(x.plate)}</b> · ${x.liters} L · ${brl(x.cost)} · ${fmtKm(x.km)}${x.station?' · '+esc(x.station):''}${x.by?' · '+esc(x.by):''}</div>`).join('')}</div>
- <div class="card tw"><b>Frota NOSBEB agora</b><table><tr><th>Veículo</th><th>Combustível</th><th>KM</th><th>Autonomia</th><th>Até 1/4</th></tr>${r.fleet.map(f=>`<tr><td><b>${esc(f.plate)}</b><br><span class="small mut">${esc(f.model)}</span></td><td>${gauge(Number(f.fuel_level))}</td><td>${fmtKm(f.km_current)}</td><td>~${f.autonomy_km} km</td><td>~${f.to_quarter_km} km</td></tr>`).join('')}</table></div>`}
-async function openFuelReport(){busy(true,'Montando o resumo...');try{openModal(fuelReportHTML(await api.rpc('fuel_daily_report_preview',{})))}catch(e){toast(e.message)}finally{busy(false)}}
 function refuelForm(vid){const list=isG()?D.vehicles:D.vehicles.filter(isFleetV),v=list.find(x=>x.id===vid)||list[0];if(!v)return toast(isG()?'Cadastre um veículo':'Nenhum veículo da frota NOSBEB');
  openForm('Registrar abastecimento',[{n:'vehicle_id',l:'Veículo',t:'select',o:list.map(x=>[x.id,`${x.plate} · ${x.model}${isFleetV(x)?' (NOSBEB)':''}`]),full:1},{n:'fuel_type',l:'Combustível',t:'select',o:[['gasolina','Gasolina'],['alcool','Álcool']]},{n:'level_after',l:'Nível após abastecer',t:'select',num:1,o:FUEL.map(f=>[f.v,f.l])},
   {n:'liters',l:'Litros abastecidos',t:'number',step:'0.01'},{n:'cost',l:'Valor pago (R$)',t:'number',step:'0.01'},{n:'km',l:'Quilometragem (hodômetro)',t:'number'},{n:'station',l:'Posto'}],
@@ -1278,6 +1282,7 @@ const NITEMS=[['limpeza','Condições de limpeza'],['lataria_farois','Condiçõe
  ['estepe_ferramentas','Estepe, chave de roda, macaco e triângulo'],['limpador_lavador','Limpador e lavador do para-brisa'],['extintor_buzina','Extintor e buzina'],['pneus_dianteiros','Pneus dianteiros'],
  ['pneus_traseiros','Pneus traseiros'],['freio_mao','Freio de mão'],['cinto','Cinto de segurança'],['painel','Indicadores do painel'],['oleo_motor','Nível do óleo do motor'],['fluido_freio','Nível do fluido de freio'],
  ['radiador','Nível do reservatório do radiador'],['motor_partida','Motor de partida'],['portas_janelas','Fechamento de portas e janelas'],['tapetes','Tapetes']];
+const EXT=['frente','lat_esq','traseira','lat_dir'];   // 4 vistas externas obrigatórias no checklist
 const NA_OK=['suporte_celular','tapetes'];   // itens que admitem "não se aplica" (mesma lista de fc_nosbeb_na_ok(); ajustar conforme a operação)
 const itemLabel=k=>NITEMS.find(x=>x[0]===k)?.[1]||k;
 const ITS={conforme:['b-ok','Conforme'],nao_conforme:['b-bad','Não conforme'],na:['b-mut','Não se aplica']};
@@ -1286,40 +1291,42 @@ const weekDues=()=>{const t=today(),dow=new Date(t+'T12:00:00').getDay()||7,mon=
 const chkOf=(vid,d)=>D.checklists.find(k=>k.vehicle_id===vid&&k.due_date===d);
 const pendFuel=()=>(D.fuelReq||[]).filter(f=>f.status==='pendente');
 function chkStat(v,d){const t=today(),k=chkOf(v.id,d);return k?['b-ok','Concluído']:d>t?['b-mut','Aguardando']:d===t?['b-warn','Pendente hoje']:['b-bad','Atrasado']}
-function ownList(rows){return rows.map(k=>`<div class="al row sp" onclick="openChecklistDetail('${k.id}')" style="cursor:pointer"><span>${fmtDT(k.created_at)} · <b>${esc(V(k.vehicle_id)?.plate||D.myFleet.find(x=>x.id===k.vehicle_id)?.plate||'')}</b> · ref. ${fmtD(k.due_date)} <span class="badge ${CND[k.condition][0]}">${CND[k.condition][1]}</span>${k.fuel_ok===false?' <span class="badge b-warn">solicitar abastecimento</span>':''}</span><span class="small mut">ver ›</span></div>`).join('')||'<p class="small mut">Nenhum checklist registrado.</p>'}
+function ownList(rows){return rows.map(k=>{const vv=V(k.vehicle_id)||D.myFleet.find(x=>x.id===k.vehicle_id)||{};return`<div class="al row sp" onclick="openChecklistDetail('${k.id}')" style="cursor:pointer"><span>${fmtDT(k.created_at)} · <b>${esc(vv.plate||'')}</b> ${esc(vv.model||'')} · ref. ${fmtD(k.due_date)} <span class="badge ${CND[k.condition][0]}">${CND[k.condition][1]}</span>${k.fuel_ok===false?' <span class="badge b-warn">solicitar abastecimento</span>':''}</span><span class="small mut">ver ›</span></div>`}).join('')||'<p class="small mut">Nenhum checklist registrado.</p>'}
 /* ---- tela inicial do motorista NOSBEB ---- */
 VIEWS.nosbeb=()=>{const co=D.companies.find(c=>c.id===ME.company_id);
  return`<h2>Olá, ${esc(ME.name.split(' ')[0])}</h2>
  <div class="card"><b>${esc(ME.name)}</b> <span class="tag2">${esc(co?.name||'')}</span><br><span class="small mut">${esc(ME.email||'e-mail não cadastrado (peça ao gestor de frota)')} · cartão ${esc(ME.card)}</span></div>
  <div class="card"><p style="margin-top:0">Checklist da frota NOSBEB (terças e quintas-feiras). Você escolhe o veículo dentro do formulário.</p>
- <button class="btn pri big" onclick="openChecklist()">📋 Preencher checklist</button></div>`};
+ <button class="btn pri big" onclick="openChecklist()">📋 Preencher checklist</button></div>
+ <div class="card"><h3 style="margin-top:0">Meus checklists realizados</h3>${ownList(D.checklists.filter(k=>k.inspected_by===ME.id).slice(0,60))}</div>`};
 /* ---- visão da equipe (gestor e recepção) ---- */
 function fuelReqCard(){const L=pendFuel();if(!L.length)return'';
  return`<div class="card"><h3>⛽ Solicitações de abastecimento vindas do checklist (${L.length})</h3><p class="small mut">Combustível abaixo de 1/4 informado pelo motorista. Registrar o abastecimento encerra a pendência; nenhum abastecimento ou despesa é criado automaticamente.</p>
- ${L.map(f=>{const k=D.checklists.find(x=>x.id===f.checklist_id);return`<div class="al row sp"><span><b>${esc(V(f.vehicle_id)?.plate||'')}</b> · ${esc(pName(f.requested_by)||k?.driver_name||'')} · ${fmtDT(f.created_at)}</span><span class="row">${k?`<button class="btn sm" onclick="openChecklistDetail('${k.id}')">Checklist</button>`:''}<button class="btn sm pri" onclick="refuelForm('${f.vehicle_id}')">Registrar abastecimento</button>${isG()?`<button class="btn sm" onclick="cancelFuelReq('${f.id}')">Cancelar</button>`:''}</span></div>`}).join('')}</div>`}
+ ${L.map(f=>{const k=D.checklists.find(x=>x.id===f.checklist_id);return`<div class="al row sp"><span><b>${esc(V(f.vehicle_id)?.plate||'')}</b> ${esc(V(f.vehicle_id)?.model||'')} · ${esc(pName(f.requested_by)||k?.driver_name||'')} · ${fmtDT(f.created_at)}</span><span class="row">${k?`<button class="btn sm" onclick="openChecklistDetail('${k.id}')">Checklist</button>`:''}<button class="btn sm pri" onclick="refuelForm('${f.vehicle_id}')">Registrar abastecimento</button>${isG()?`<button class="btn sm" onclick="cancelFuelReq('${f.id}')">Cancelar</button>`:''}</span></div>`}).join('')}</div>`}
 async function cancelFuelReq(id){if(!confirm('Cancelar esta solicitação de abastecimento?'))return;try{await api.update('fuel_requests',id,{status:'cancelada',resolved_at:nowISO()});await refresh()}catch(e){toast(e.message)}}
-VIEWS.checklist=()=>{const t=today(),[tue,thu]=weekDues(),hist=D.checklists.slice(0,40),occ=D.checklists.filter(k=>k.condition==='problema'&&Date.now()-new Date(k.created_at)<30*864e5);
+VIEWS.checklist=()=>{const t=today(),[tue,thu]=weekDues(),fd=typeof VARG==='string'?VARG:'',hist=D.checklists.filter(k=>!fd||k.inspected_by===fd).slice(0,100),drivers=[...new Map(D.checklists.map(k=>[k.inspected_by,k.driver_name||pName(k.inspected_by)])).entries()],occ=D.checklists.filter(k=>k.condition==='problema'&&Date.now()-new Date(k.created_at)<30*864e5);
  return`<div class="row sp"><h2>Checklist · frota NOSBEB</h2></div>
  <div class="infobox" style="margin:0 0 12px">Inspeção às <b>terças e quintas-feiras</b> (esta semana: ${fmtD(tue)} e ${fmtD(thu)}), preenchida pelo próprio motorista logado: 18 itens, fotos da água e do óleo, KM e nível de combustível. O responsável fica registrado automaticamente.</div>
  ${fuelReqCard()}
  ${NCHK().map(v=>`<div class="card"><div class="row sp"><div><b>${esc(v.plate)} · ${esc(v.model)}</b> <span class="tag2">${esc(companyName(v)||'NOSBEB')}</span><br><span class="small">${[['Terça',tue],['Quinta',thu]].map(([n,d])=>{const s=chkStat(v,d);return`${n} ${fmtD(d).slice(0,5)}: <span class="badge ${s[0]}">${s[1]}</span>`}).join(' · ')}</span><br><span class="small mut">${fmtKm(v.km_current)}</span></div>
   <button class="btn sm" onclick="openChecklist('${v.id}')">📋 Fazer checklist</button></div></div>`).join('')||'<div class="card mut">Nenhum veículo da frota NOSBEB. Vincule os veículos à empresa NOSBEB em Veículos › Editar.</div>'}
- <div class="card"><h3>Ocorrências: não conformidades (30 dias)</h3>${occ.map(k=>`<div class="al" style="cursor:pointer" onclick="openChecklistDetail('${k.id}')"><b>${esc(V(k.vehicle_id)?.plate||'')}</b> · ${esc(k.driver_name||pName(k.inspected_by))} · ${fmtDT(k.created_at)}<br><span class="small" style="color:var(--bad)">${Object.entries(k.items||{}).filter(([,x])=>x.status==='nao_conforme').map(([c,x])=>esc(itemLabel(c))+(x.note?' ('+esc(x.note)+')':'')).join(' · ')}</span></div>`).join('')||'<p class="small mut">Nenhuma ocorrência.</p>'}</div>
- <div class="card tw"><h3>Últimos checklists</h3><table><tr><th>Data</th><th>Veículo</th><th>Motorista</th><th>Ref.</th><th>Resultado</th><th>KM</th><th></th></tr>${hist.map(k=>`<tr><td>${fmtDT(k.created_at)}</td><td><b>${esc(V(k.vehicle_id)?.plate||'')}</b></td><td>${esc(k.driver_name||pName(k.inspected_by))}</td><td>${fmtD(k.due_date)}${k.on_schedule?'':' <span class="small mut">(fora do dia)</span>'}</td>
+ <div class="card"><h3>Ocorrências: não conformidades (30 dias)</h3>${occ.map(k=>`<div class="al" style="cursor:pointer" onclick="openChecklistDetail('${k.id}')"><b>${esc(V(k.vehicle_id)?.plate||'')}</b> ${esc(V(k.vehicle_id)?.model||'')} · ${esc(k.driver_name||pName(k.inspected_by))} · ${fmtDT(k.created_at)}<br><span class="small" style="color:var(--bad)">${Object.entries(k.items||{}).filter(([,x])=>x.status==='nao_conforme').map(([c,x])=>esc(itemLabel(c))+(x.note?' ('+esc(x.note)+')':'')).join(' · ')}</span></div>`).join('')||'<p class="small mut">Nenhuma ocorrência.</p>'}</div>
+ <div class="card tw"><div class="row sp"><h3>Histórico de checklists</h3><select style="width:auto" onchange="go('checklist',this.value)"><option value="">Todos os motoristas</option>${drivers.map(([id,n])=>`<option value="${id}" ${fd===id?'selected':''}>${esc(n)} (${D.checklists.filter(k=>k.inspected_by===id).length})</option>`).join('')}</select></div><table><tr><th>Data</th><th>Veículo</th><th>Motorista</th><th>Ref.</th><th>Resultado</th><th>KM</th><th></th></tr>${hist.map(k=>`<tr><td>${fmtDT(k.created_at)}</td><td><b>${esc(V(k.vehicle_id)?.plate||'')}</b><br><span class="small mut">${esc(V(k.vehicle_id)?.model||'')}</span></td><td>${esc(k.driver_name||pName(k.inspected_by))}</td><td>${fmtD(k.due_date)}${k.on_schedule?'':' <span class="small mut">(fora do dia)</span>'}</td>
  <td><span class="badge ${CND[k.condition][0]}">${CND[k.condition][1]}</span>${k.fuel_ok===false?' <span class="badge b-warn">abastecer</span>':''}${k.km_flag?' <span class="badge b-warn">KM menor</span>':''}</td><td>${fmtKm(k.km)}</td><td><button class="btn sm" onclick="openChecklistDetail('${k.id}')">Abrir</button></td></tr>`).join('')||'<tr><td colspan="7" class="mut">Nenhum checklist registrado.</td></tr>'}</table></div>`};
 function openPhoto(src){if(!src)return;openModal(`<div class="row sp"><h3>Foto</h3><button class="btn sm" onclick="closeModal()">✕</button></div><img src="${src}" style="width:100%;border-radius:10px">`)}
 function openChecklistDetail(id){const k=D.checklists.find(x=>x.id===id);if(!k)return;const v=V(k.vehicle_id)||D.myFleet.find(x=>x.id===k.vehicle_id)||{};
  const ph=p=>p?`<div class="thumbs"><img data-path="${esc(p)}" onclick="openPhoto(this.src)"></div>`:'';
  openModal(`<div class="row sp"><h3>Checklist · ${esc(v.plate||'')}</h3><button class="btn sm" onclick="closeModal()">✕</button></div>
- <p class="small">Motorista: <b>${esc(k.driver_name||pName(k.inspected_by))}</b>${k.driver_email?' · '+esc(k.driver_email):''}${k.company_id?' · '+esc(D.companies.find(c=>c.id===k.company_id)?.name||''):''}<br>Enviado em ${fmtDT(k.created_at)} · período programado: ${fmtD(k.due_date)}${k.on_schedule?'':' (feito fora do dia)'}<br>${esc(v.model||'')} · KM informado: <b>${fmtKm(k.km_declared??k.km)}</b>${k.km!==(k.km_declared??k.km)?` (corrigido para ${fmtKm(k.km)})`:''}</p>
+ <p class="small">Veículo: <b>${esc(v.plate||'')}</b> · ${esc(v.model||'')}<br>Motorista: <b>${esc(k.driver_name||pName(k.inspected_by))}</b>${k.driver_email?' · '+esc(k.driver_email):''}${k.company_id?' · '+esc(D.companies.find(c=>c.id===k.company_id)?.name||''):''}<br>Enviado em ${fmtDT(k.created_at)} · período programado: ${fmtD(k.due_date)}${k.on_schedule?'':' (feito fora do dia)'}<br>${esc(v.model||'')} · KM informado: <b>${fmtKm(k.km_declared??k.km)}</b>${k.km!==(k.km_declared??k.km)?` (corrigido para ${fmtKm(k.km)})`:''}</p>
  ${k.km_flag?`<div class="warnbox">KM menor que o último registrado. Justificativa: ${esc(k.km_justification||'-')}</div>`:''}
  ${k.fuel_ok===false?'<div class="warnbox"><b>Solicitar abastecimento:</b> o motorista informou combustível abaixo de 1/4.</div>':''}
+ ${Object.keys(k.photos||{}).length?`<div class="small mut">Vistas externas (frente · lateral esquerda · traseira · lateral direita)</div><div class="thumbs">${['frente','lat_esq','traseira','lat_dir'].filter(a=>k.photos[a]).map(a=>`<img data-path="${esc(k.photos[a])}" title="${a}" onclick="openPhoto(this.src)">`).join('')}</div>`:''}
  <div class="card tw"><table><tr><th>Item</th><th>Avaliação</th><th>Observação / fotos</th></tr>${NITEMS.map(([c,l])=>{const x=(k.items||{})[c]||{};return`<tr><td>${esc(l)}</td><td><span class="badge ${(ITS[x.status]||['b-mut','-'])[0]}">${(ITS[x.status]||['','-'])[1]}</span></td><td>${esc(x.note||'')}${(x.photos||[]).map(p=>ph(p)).join('')}${c==='oleo_motor'?'<div class="small mut">Foto do óleo:</div>'+ph(k.oil_photo):''}${c==='radiador'?'<div class="small mut">Foto da água:</div>'+ph(k.water_photo):''}</td></tr>`}).join('')}</table></div>
  ${k.notes?`<p class="small">Observações gerais: ${esc(k.notes)}</p>`:''}<p class="small mut">As fotografias são evidência; a avaliação é a informada pelo motorista.</p>`)}
 /* ---- formulário ---- */
 function openChecklist(vid){const list=isS()?NCHK():D.myFleet,v=vid?list.find(x=>x.id===vid):null;
  if(vid&&!v)return toast('Escolha um veículo da frota NOSBEB.');
- CK={id:uuid(),v,km:'',just:'',items:Object.fromEntries(NITEMS.map(([k])=>[k,{status:'',note:'',photos:[]}])),water:null,oil:null,fuel:null,notes:'',saved:false};closeModal();go('chkForm')}
+ CK={id:uuid(),v,views:{frente:null,lat_esq:null,traseira:null,lat_dir:null},base:{},km:'',just:'',items:Object.fromEntries(NITEMS.map(([k])=>[k,{status:'',note:'',photos:[]}])),water:null,oil:null,fuel:null,notes:'',saved:false};closeModal();go('chkForm');ckLoadBase()}
 VIEWS.chkForm=()=>{if(!CK)return isNosbebDriver()?VIEWS.nosbeb():VIEWS.checklist();const v=CK.v||{},t=today(),due=lastDue(t),list=isS()?NCHK():D.myFleet,co=D.companies.find(c=>c.id===(ME.company_id||v.company_id)),low=CK.km!==''&&v.km_current!=null&&Number(CK.km)<Number(v.km_current);
  const slot=(k,l,hint)=>`<div style="margin-top:8px"><b>${l} *</b> <span class="small mut">${hint}</span><div class="imgbox" style="margin:6px 0;max-width:320px">${CK[k]?`<img src="${CK[k]}">`:'<div class="empty">sem foto</div>'}</div><div class="row"><button class="btn sm pri" onclick="ckShoot('${k}')">📸 ${CK[k]?'Refazer':'Fotografar'}</button><button class="btn sm" onclick="ckPick('${k}')">🖼 Escolher do aparelho</button>${TESTB()?`<button class="btn sm ghost" onclick="ckTest('${k}')">🧪 foto de teste</button>`:''}</div></div>`;
  return`<div class="row sp"><h2>Checklist NOSBEB</h2><button class="btn sm" onclick="CK=null;go(isNosbebDriver()?'nosbeb':'checklist')">← Voltar</button></div>
@@ -1334,6 +1341,7 @@ VIEWS.chkForm=()=>{if(!CK)return isNosbebDriver()?VIEWS.nosbeb():VIEWS.checklist
  ${NITEMS.map(([k,l],i)=>{const s=CK.items[k];return`<div class="chk" style="display:block"><div class="row sp"><span><b>${i+1}.</b> ${esc(l)}</span><div class="seg"><button class="ok ${s.status==='conforme'?'on':''}" onclick="ckSet('${k}','conforme')">Conforme</button><button class="is ${s.status==='nao_conforme'?'on':''}" onclick="ckSet('${k}','nao_conforme')">Não conforme</button>${NA_OK.includes(k)?`<button class="${s.status==='na'?'on':''}" onclick="ckSet('${k}','na')">Não se aplica</button>`:''}</div></div>
   ${s.status==='nao_conforme'?`<div style="margin-top:6px"><textarea placeholder="Observação sobre: ${esc(l)}" oninput="CK.items['${k}'].note=this.value">${esc(s.note)}</textarea><div class="thumbs" style="margin:6px 0">${s.photos.map((p,j)=>`<img src="${p}" onclick="openPhoto(this.src)">`).join('')}</div><div class="row"><button class="btn sm" onclick="ckItemShoot('${k}')">📸 Foto da evidência</button><button class="btn sm" onclick="ckItemPick('${k}')">🖼 Escolher</button>${TESTB()?`<button class="btn sm ghost" onclick="ckItemTest('${k}')">🧪 foto de teste</button>`:''}</div></div>`:''}
   ${k==='oleo_motor'?slot('oil','🛢 Foto do óleo','vareta ou visor com o nível legível'):''}${k==='radiador'?slot('water','💧 Foto da água','reservatório do radiador com o nível visível'):''}</div>`}).join('')}</div>
+ <div class="card"><h3>Fotos externas do veículo *</h3><p class="small mut">As 4 vistas são obrigatórias.${Object.keys(CK.base||{}).length?' Use a foto base (miniatura) como referência de enquadramento.':''}</p><div class="grid g2">${EXT.map(k=>{const a=ANGLES.find(x=>x.k===k);return`<div><b class="small">${esc(a.l.replace(/ \(.*\)/,''))}</b>${CK.base?.[k]?`<div class="small mut">Referência:</div><div class="thumbs"><img data-path="${esc(CK.base[k])}" onclick="openPhoto(this.src)"></div>`:''}<div class="imgbox" style="margin:6px 0;max-width:220px">${CK.views[k]?`<img src="${CK.views[k]}">`:'<div class="empty">sem foto</div>'}</div><div class="row"><button class="btn sm pri" onclick="ckViewShoot('${k}')">📸 ${CK.views[k]?'Refazer':'Fotografar'}</button><button class="btn sm" onclick="ckViewPick('${k}')">🖼</button>${TESTB()?`<button class="btn sm ghost" onclick="ckViewTest('${k}')">🧪</button>`:''}</div></div>`}).join('')}</div></div>
  <div class="card"><h3>Combustível</h3><b>O nível de combustível está adequado para uso?</b><div class="small mut">Critério mínimo: 1/4 do tanque.</div>
  <div class="seg" style="margin-top:6px"><button class="ok ${CK.fuel===true?'on':''}" onclick="CK.fuel=true;render()">Sim: igual ou superior a 1/4</button><button class="is ${CK.fuel===false?'on':''}" onclick="CK.fuel=false;render()">Não: inferior a 1/4</button></div>
  ${CK.fuel===false?'<div class="warnbox"><b>Solicitar abastecimento.</b> A gestão será avisada; nenhum abastecimento é registrado por você aqui.</div>':''}
@@ -1341,9 +1349,13 @@ VIEWS.chkForm=()=>{if(!CK)return isNosbebDriver()?VIEWS.nosbeb():VIEWS.checklist
  <button class="btn pri big" onclick="ckSave()">✔ Enviar checklist</button>`};
 function ckKmWarn(){return`<div class="warnbox">O KM informado é menor que o último registrado (${fmtKm(CK.v?.km_current)}). Confirme o valor ou justifique:<textarea placeholder="Justificativa (obrigatória)" oninput="CK.just=this.value">${esc(CK.just)}</textarea></div>`}
 function ckKmHint(){const el=$('#ckKmWarn');if(!el)return;const low=CK.km!==''&&CK.v&&Number(CK.km)<Number(CK.v.km_current);if(low&&!el.innerHTML)el.innerHTML=ckKmWarn();if(!low)el.innerHTML=''}
-function ckVeh(id){CK.v=(isS()?NCHK():D.myFleet).find(x=>x.id===id)||null;render()}
+function ckVeh(id){CK.v=(isS()?NCHK():D.myFleet).find(x=>x.id===id)||null;CK.base={};render();ckLoadBase()}
+async function ckLoadBase(){if(!CK||!CK.v)return;const id=CK.v.id;try{const r=await api.rpc('vehicle_base_photos',{p_vehicle:id});if(CK&&CK.v?.id===id){CK.base=r[0]?.photos||{};render()}}catch(e){}}
+async function ckViewShoot(k){const a=ANGLES.find(x=>x.k===k);let g=null;if(CK.base?.[k])try{g=await api.photoUrl(CK.base[k])}catch(e){}ckCap(a.l,a.t,src=>{CK.views[k]=src;render()},g)}
+function ckViewPick(k){pickFile(src=>{CK.views[k]=src;render()})}
+function ckViewTest(k){CK.views[k]=demoImage((CK.v?.plate||'teste')+'|'+k,'teste',{damage:'none'});render()}
 function ckSet(k,s){CK.items[k].status=s;if(s!=='nao_conforme'){CK.items[k].note='';CK.items[k].photos=[]}render()}
-const ckCap=(title,text,cb)=>capture(cb,{title,text});
+const ckCap=(title,text,cb,ghost)=>capture(cb,ghost?{title,text,ghost}:{title,text});
 function ckShoot(k){ckCap(k==='water'?'Foto da água':'Foto do óleo',k==='water'?'Enquadre o reservatório do radiador com o nível visível.':'Enquadre a vareta/visor com o nível do óleo legível.',src=>{CK[k]=src;render()})}
 function ckPick(k){pickFile(src=>{CK[k]=src;render()})}
 function ckTest(k){CK[k]=demoChkImage(k==='water'?'agua':'oleo',CK.v?.plate||'teste');render()}
@@ -1356,27 +1368,14 @@ async function ckSave(){const c=CK;if(!c)return;const km=Number(c.km);
  const low=c.v.km_current!=null&&km<Number(c.v.km_current);if(low&&!c.just.trim())return toast('KM menor que o último registrado: informe a justificativa');
  const miss=NITEMS.find(([k])=>!c.items[k].status);if(miss)return toast('Avalie todos os itens. Falta: '+miss[1]);
  if(!c.oil)return toast('Fotografe o óleo (item 13)');if(!c.water)return toast('Fotografe a água do reservatório (item 15)');
+ const m4=EXT.find(k=>!c.views[k]);if(m4)return toast('Fotografe as 4 vistas externas. Falta: '+ANGLES.find(a=>a.k===m4).l.replace(/ \(.*\)/,''));
  if(c.fuel===null)return toast('Responda se o nível de combustível está adequado');
  busy(true,'Enviando fotos...');try{const base=`nosbeb/${c.v.id}/${c.id}`,wp=`${base}/agua.jpg`,op=`${base}/oleo.jpg`,items={};
-  await api.upload(wp,await dataURLtoBlob(c.water));await api.upload(op,await dataURLtoBlob(c.oil));
+  await api.upload(wp,await dataURLtoBlob(c.water));await api.upload(op,await dataURLtoBlob(c.oil));const photos={};for(const k of EXT){const p=`${base}/${k}.jpg`;await api.upload(p,await dataURLtoBlob(c.views[k]));photos[k]=p}
   for(const [k] of NITEMS){const s=c.items[k],ps=[];for(let i=0;i<s.photos.length;i++){const p=`${base}/item_${k}_${i+1}.jpg`;await api.upload(p,await dataURLtoBlob(s.photos[i]));ps.push(p)}items[k]={status:s.status,note:s.note.trim()||null,photos:ps}}
   busy(true,'Salvando checklist...');
-  if(!c.saved){await api.insert('nosbeb_checklists',{id:c.id,vehicle_id:c.v.id,km,items,fuel_ok:c.fuel,notes:c.notes.trim()||null,water_photo:wp,oil_photo:op,km_justification:low?c.just.trim():null});c.saved=true}
+  if(!c.saved){await api.insert('nosbeb_checklists',{id:c.id,vehicle_id:c.v.id,km,items,photos,fuel_ok:c.fuel,notes:c.notes.trim()||null,water_photo:wp,oil_photo:op,km_justification:low?c.just.trim():null});c.saved=true}
   toast(c.fuel===false?'Checklist enviado. Abastecimento solicitado à gestão.':'Checklist enviado ✔');CK=null;await loadData();go(isNosbebDriver()?'nosbeb':'checklist')}catch(e){toast(e.message,6000)}finally{busy(false)}}
-
-/* ======================= RODÍZIO DE SÃO PAULO ======================= */
-VIEWS.rodizio=()=>{const a=VARG||{},day=a.day||today(),from=a.from||'07:00',to=a.to||'20:00',wdn=new Date(day+'T12:00:00').getDay(),fin=RODIZIO.finais[wdn];
- const s=new Date(day+'T'+from+':00').toISOString(),e=new Date(day+'T'+to+':00').toISOString();
- const rows=D.vehicles.filter(v=>v.status!=='inativo').map(v=>({v,r:rodizioCheck(v.plate,s,e,v.rodizio_exempt)})).sort((x,y)=>(y.r.restricted===true)-(x.r.restricted===true)||x.v.plate.localeCompare(y.v.plate));
- const conf=D.bookings.filter(b=>['aprovada','chave_retirada','em_uso'].includes(b.status)&&b.sp_rodizio&&b.vehicle_id&&new Date(b.end_at)>new Date()).map(b=>({b,v:V(b.vehicle_id),r:rodizioCheck(V(b.vehicle_id)?.plate,b.start_at,b.end_at,V(b.vehicle_id)?.rodizio_exempt)})).filter(x=>x.r.restricted);
- const pend=D.bookings.filter(b=>b.status==='solicitada'&&b.sp_rodizio&&(isG()||receptionEligible(b)));
- return`<h2>Rodízio de São Paulo</h2>
- <div class="infobox" style="margin:0 0 12px">Regra aplicada (CET): <b>segunda a sexta, das 7h às 10h e das 17h às 20h</b>, na área do centro expandido, conforme o <b>final da placa</b>: seg 1 e 2 · ter 3 e 4 · qua 5 e 6 · qui 7 e 8 · sex 9 e 0. <b>Não considera feriados e suspensões</b> (ex.: fim de ano, Carnaval) nem isenções além da marcada no cadastro do veículo; caminhões têm regra própria. Confirme sempre no site da CET/Prefeitura. A solicitação indica se a <b>rota passa pelo rodízio</b>; sem horário exato na área, o app considera todo o período da reserva (visão conservadora).</div>
- <div class="card row"><div><label style="margin-top:0">Data</label><input type="date" id="rdD" value="${day}"></div><div><label style="margin-top:0">Das</label><input type="time" id="rdF" value="${from}"></div><div><label style="margin-top:0">Às</label><input type="time" id="rdT" value="${to}"></div><button class="btn pri" style="align-self:flex-end" onclick="go('rodizio',{day:$('#rdD').value,from:$('#rdF').value,to:$('#rdT').value})">Consultar</button></div>
- <div class="card"><b>${WD[wdn]}, ${fmtD(day)}:</b> ${fin?`placas com final <b>${fin.join(' e ')}</b> não circulam na área entre 7h–10h e 17h–20h.`:'fim de semana: sem rodízio.'}
- <div class="tw" style="margin-top:8px"><table><tr><th>Veículo</th><th>Final</th><th>Situação em ${from}–${to}</th></tr>${rows.map(({v,r})=>`<tr><td><b>${esc(v.plate)}</b><br><span class="small mut">${esc(v.model)}${companyName(v)?' · '+esc(companyName(v)):''}</span></td><td>${r.digit??'-'}</td><td>${r.exempt?'<span class="badge b-info">Isento</span>':r.restricted===null?'<span class="badge b-warn">Conferir</span>':r.restricted?`<span class="badge b-bad">🚫 Restrito</span> <span class="small">${r.windows.map(w=>w.from+'–'+w.to).join(' e ')}</span>`:'<span class="badge b-ok">Livre</span>'}</td></tr>`).join('')}</table></div></div>
- <div class="card"><h3>Reservas aprovadas com rota pelo rodízio e veículo restrito (${conf.length})</h3>${conf.map(({b,v,r})=>`<div class="al"><span class="badge b-bad">Conflito</span> <b>${esc(v.plate)}</b> (final ${r.digit}) · ${esc(pName(b.driver_id))} · ${fmtDT(b.start_at)} → ${fmtDT(b.end_at)} · ${esc(b.destination)}<br><span class="small mut">${esc(rodNote(r))}</span> ${isG()?`<button class="btn sm" onclick="editBookingG('${b.id}')">Trocar veículo</button>`:''}</div>`).join('')||'<p class="small mut">Nenhum conflito.</p>'}</div>
- <div class="card"><h3>Solicitações pendentes com rota pelo rodízio (${pend.length})</h3>${pend.map(b=>`<div class="al">${esc(pName(b.driver_id))} · ${fmtDT(b.start_at)} → ${fmtDT(b.end_at)} · ${esc(b.destination)} <button class="btn sm pri" onclick="openDecision('${b.id}')">Decidir (veículos sem restrição primeiro)</button></div>`).join('')||'<p class="small mut">Nenhuma.</p>'}</div>`};
 
 /* ======================= EMPRESAS e fotografias ======================= */
 function companyForm(id){const c=D.companies.find(x=>x.id===id)||{fleet_controls:false};
@@ -1464,19 +1463,42 @@ const VF=()=>[{n:'plate',l:'Placa',req:1,sec:'Identificação'},{n:'model',l:'Mo
  {n:'rodizio_exempt',l:'Isento do rodízio',cl:'Isento do rodízio de SP (ex.: veículo elétrico ou com isenção própria)',t:'check',full:1,sec:'Rodízio de São Paulo'},
  {n:'licenc_due',l:'Vencimento do licenciamento',t:'date',sec:'Documentos'},{n:'insurance_due',l:'Vencimento do seguro',t:'date'},{n:'notes',l:'Observações',t:'textarea',full:1}];
 function vehForm(id){const v=V(id)||{status:'disponivel',vehicle_type:'Hatch/compacto',seats:5,current_fuel:'gasolina',fuel_level:1,km_current:0,tank_liters:50,kml_gasolina:12,kml_alcool:8.5,oil_interval_km:10000,oil_interval_months:12,tire_interval_km:40000,prev_interval_km:10000,prev_interval_months:12,tire_pressure_interval_days:15,has_spare_tire:true,has_wheel_wrench:true,has_jack:true,has_triangle:true,has_spare_key:false,spare_key_holder:'Gestor de frota'};
- openForm(id?'Editar veículo':'Novo veículo',VF().filter(f=>!(id&&f.n==='status')),v,async o=>{o.plate=normCard(o.plate);if(!o.spare_key_holder)o.spare_key_holder='Gestor de frota';if(id)await api.update('vehicles',id,o);else await api.insert('vehicles',o)},id&&v.status==='manutencao'?'<div class="infobox">Status de manutenção: use a tela Manutenção para alterar previsão ou liberar.</div>':'')}
+ VB={};CURV=V(id)||null;
+ openForm(id?'Editar veículo':'Novo veículo',VF().filter(f=>!(id&&f.n==='status')),v,async o=>{o.plate=normCard(o.plate);if(!o.spare_key_holder)o.spare_key_holder='Gestor de frota';let vid=id;if(id)await api.update('vehicles',id,o);else vid=(await api.insert('vehicles',o)).id;await saveBase(vid,V(id))},(id&&v.status==='manutencao'?'<div class="infobox">Status de manutenção: use a tela Manutenção para alterar previsão ou liberar.</div>':'')+baseUI());hydrate()}
 VIEWS.veiculos=()=>{const cf=typeof VARG==='string'?VARG:'';return`<div class="row sp"><h2>Veículos</h2><div class="row"><button class="btn pri" onclick="vehForm()">+ Novo veículo</button></div></div>
  <div class="card"><label style="margin-top:0">Empresa</label><select onchange="go('veiculos',this.value)"><option value="">Todas</option>${D.companies.map(c=>`<option value="${c.id}" ${cf===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}<option value="none" ${cf==='none'?'selected':''}>Sem empresa</option></select></div>
- ${D.vehicles.filter(v=>!cf||(cf==='none'?!v.company_id:v.company_id===cf)).map(v=>{const [l,c]=vehNow(v),f=fuelInfo(v),ms=missingSafety(v);return`<div class="card"><div class="row sp"><div><b>${esc(v.plate)} · ${esc(v.model)} ${esc(v.year||'')}</b> <span class="badge ${c}">${esc(l)}</span> ${companyName(v)?`<span class="tag2">🏢 ${esc(companyName(v))}</span>`:''}${v.rodizio_exempt?' <span class="tag2">isento do rodízio</span>':''}<br>
+ ${D.vehicles.filter(v=>!cf||(cf==='none'?!v.company_id:v.company_id===cf)).map(v=>{const [l,c]=vehNow(v),f=fuelInfo(v),ms=missingSafety(v);return`<div class="card"><div class="row sp"><div><b>${esc(v.plate)} · ${esc(v.model)} ${esc(v.year||'')}</b> <span class="badge ${c}">${esc(l)}</span> ${companyName(v)?`<span class="tag2">🏢 ${esc(companyName(v))}</span>`:''}${v.rodizio_exempt?' <span class="tag2">isento do rodízio</span>':''}${Object.keys(v.base_photos||{}).length?` <span class="tag2">📷 fotos base ${Object.keys(v.base_photos).length}/5</span>`:' <span class="tag2" style="background:#fef3c7">sem fotos base</span>'}<br>
  <span class="small">${esc(v.vehicle_type)} · ${v.seats} lugares · ${fmtKm(v.km_current)} · ${gauge(f.lvl)} · tanque ${f.tank} L · gas. ${v.kml_gasolina} / álc. ${v.kml_alcool} km/L</span><br>
  <span class="small">Itens: ${SAFETY.map(([k,l])=>`${v[k]===false?'❌':'✅'} ${l}`).join(' · ')} · 🔑 Chave reserva: ${v.has_spare_key?'sim, com '+esc(v.spare_key_holder||'Gestor de frota'):'não possui'}</span>
  ${ms.length?`<div class="badbox">Faltando no porta-malas: ${ms.join(', ')}</div>`:''}
  <div class="small mut">Óleo: ${esc(maintStatus(v,'oil').txt)} · Pneus: ${esc(maintStatus(v,'tire').txt)} · Calibragem: ${esc(tpStatus(v).txt)} · Preventiva: ${esc(maintStatus(v,'prev').txt)}<br>Licenciamento: ${fmtD(v.licenc_due)} · Seguro: ${fmtD(v.insurance_due)}</div></div>
  <div class="row"><button class="btn sm" onclick="go('hist','${v.id}')">📸 Vistorias</button><button class="btn sm" onclick="vehForm('${v.id}')">Editar</button></div></div></div>`}).join('')||'<div class="card mut">Nenhum veículo cadastrado.</div>'}`};
-VIEWS.hist=()=>{const v=V(VARG);if(!v)return VIEWS.veiculos();AFTER.push(async()=>{try{const ins=await api.select('inspections',{f:[['eq','vehicle_id',v.id]],order:'created_at',desc:true,limit:40});
- $('#hList').innerHTML=ins.map(i=>`<div class="card" style="cursor:pointer" onclick="openInspection('${i.id}')"><div class="row sp"><div><b>${i.kind==='retirada'?'📸 Retirada':'↩ Devolução'}</b> · ${fmtDT(i.created_at)} · ${esc(pName(i.driver_id))} ${i.analysis?(i.analysis.reference||i.analysis.prevId?iBadge({status:['ok','warn','bad'][i.analysis.worst||0]}):'<span class="badge b-info">Referência</span>'):''}${i.complete===false?' <span class="badge b-bad">Incompleta</span>':''}${i.analysis?.consumption?.flag?' <span class="badge b-warn">Consumo alto</span>':''}${i.analysis?.incident?' <span class="badge b-bad">Incidente</span>':''}<br><span class="small mut">${fmtKm(i.km)} · ${fuelL(Number(i.fuel_level))}${i.notes?' · '+esc(i.notes):''}</span></div>
- <div class="thumbs">${Object.values(i.photos||{}).slice(0,5).map(p=>`<img data-path="${esc(p)}">`).join('')}</div></div></div>`).join('')||'<div class="card mut">Nenhuma vistoria.</div>';hydrate()}catch(e){toast(e.message)}});
- return`<div class="row sp"><h2>Vistorias · ${esc(v.plate)}</h2><button class="btn sm" onclick="go('veiculos')">← Veículos</button></div><div id="hList"><div class="card mut">Carregando...</div></div>`};
+/* ======================= VISTORIAS DO VEÍCULO (inclui checklists NOSBEB) ======================= */
+VIEWS.hist=()=>{const v=V(VARG);if(!v)return VIEWS.veiculos();AFTER.push(()=>loadHist(v.id));
+ return`<div class="row sp"><h2>Vistorias · ${esc(v.plate)} · ${esc(v.model)}</h2><div class="row"><button class="btn sm" onclick="go('hist','${v.id}')">↻ Atualizar</button><button class="btn sm" onclick="go('veiculos')">← Veículos</button></div></div>
+ ${isFleetV(v)?'<div class="infobox" style="margin:0 0 12px">Frota NOSBEB: os checklists feitos pelos motoristas aparecem aqui junto com as vistorias.</div>':''}<div id="hList"><div class="card mut">Carregando...</div></div>`};
+async function loadHist(vid){const el=$('#hList');if(!el)return;
+ try{const [ins,cks]=await Promise.all([api.select('inspections',{f:[['eq','vehicle_id',vid]],order:'created_at',desc:true,limit:60}),api.select('nosbeb_checklists',{f:[['eq','vehicle_id',vid]],order:'created_at',desc:true,limit:60})]);
+  cks.forEach(k=>{if(!D.checklists.some(x=>x.id===k.id))D.checklists.push(k)});
+  const rows=[...ins.map(i=>({t:i.created_at,h:`<div class="card" style="cursor:pointer" onclick="openInspection('${i.id}')"><div class="row sp"><div><b>${i.kind==='retirada'?'📸 Retirada':'↩ Devolução'}</b> · ${fmtDT(i.created_at)} · ${esc(pName(i.driver_id))} ${i.analysis?(i.analysis.reference||i.analysis.prevId?iBadge({status:['ok','warn','bad'][i.analysis.worst||0]}):'<span class="badge b-info">Referência</span>'):''}${i.complete===false?' <span class="badge b-bad">Incompleta</span>':''}${i.analysis?.consumption?.flag?' <span class="badge b-warn">Consumo alto</span>':''}${i.analysis?.incident?' <span class="badge b-bad">Incidente</span>':''}<br><span class="small mut">${fmtKm(i.km)} · ${fuelL(Number(i.fuel_level))}${i.notes?' · '+esc(i.notes):''}</span></div>
+   <div class="thumbs">${Object.values(i.photos||{}).slice(0,5).map(p=>`<img data-path="${esc(p)}">`).join('')}</div></div></div>`})),
+   ...cks.map(k=>({t:k.created_at,h:`<div class="card" style="cursor:pointer" onclick="openChecklistDetail('${k.id}')"><div class="row sp"><div><b>📋 Checklist NOSBEB</b> · ${fmtDT(k.created_at)} · ${esc(k.driver_name||pName(k.inspected_by))} <span class="badge ${CND[k.condition][0]}">${CND[k.condition][1]}</span>${k.fuel_ok===false?' <span class="badge b-warn">abastecer</span>':''}<br><span class="small mut">${fmtKm(k.km)} · período ${fmtD(k.due_date)}${Object.values(k.items||{}).filter(x=>x.status==='nao_conforme').length?' · '+Object.values(k.items).filter(x=>x.status==='nao_conforme').length+' item(ns) não conforme(s)':''}</span></div>
+   <div class="thumbs">${Object.values(k.photos||{}).slice(0,4).map(p=>`<img data-path="${esc(p)}">`).join('')}</div></div></div>`}))].sort((a,b)=>a.t<b.t?1:-1);
+  el.innerHTML=rows.map(r=>r.h).join('')||'<div class="card mut">Nenhuma vistoria ou checklist.</div>';hydrate()}
+ catch(e){el.innerHTML=`<div class="badbox">Não foi possível carregar o histórico: ${esc(e.message)}</div>`}}
+
+/* ======================= FOTOS BASE DO VEÍCULO ======================= */
+let VB={},CURV=null;
+const bpHTML=k=>VB[k]?`<img src="${VB[k]}">`:CURV?.base_photos?.[k]?`<img data-path="${esc(CURV.base_photos[k])}">`:'<div class="empty">sem foto</div>';
+function baseUI(){return`<div class="fsec">Fotos base do veículo</div><div class="small mut">Fotografe o veículo em local plano e bem iluminado: 4 vistas externas e o painel. Servem de <b>referência</b> no checklist/vistoria e na análise de avarias entre fotos.</div>
+ <div class="grid g2" style="margin-top:6px">${ANGLES.map(a=>`<div><b class="small">${esc(a.l.replace(/ \(.*\)/,''))}</b><div class="imgbox" id="bp_${a.k}" style="max-width:220px;margin:4px 0">${bpHTML(a.k)}</div><div class="row"><button class="btn sm" onclick="bpShoot('${a.k}')">📸 Fotografar</button><button class="btn sm" onclick="bpPick('${a.k}')">🖼 Escolher</button>${TESTB()?`<button class="btn sm ghost" onclick="bpTest('${a.k}')">🧪</button>`:''}</div></div>`).join('')}</div>`}
+function bpSet(k,src){VB[k]=src;const el=$('#bp_'+k);if(el){el.innerHTML=bpHTML(k);hydrate()}}
+function bpShoot(k){const a=ANGLES.find(x=>x.k===k);capture(src=>bpSet(k,src),{title:'Foto base · '+a.l,text:a.t})}
+function bpPick(k){pickFile(src=>bpSet(k,src))}
+function bpTest(k){bpSet(k,demoImage((CURV?.plate||'base')+'|'+k,'base',{damage:'none'}))}
+async function saveBase(vid,old){const ks=Object.keys(VB);if(!ks.length)return;const cur={...(old?.base_photos||{})};
+ for(const k of ks){const p=`base/${vid}/${k}_${Date.now()}.jpg`;await api.upload(p,await dataURLtoBlob(VB[k]));cur[k]=p}
+ await api.update('vehicles',vid,{base_photos:cur,base_photos_at:nowISO()});VB={}}
 
 /* ======================= USUÁRIOS ======================= */
 const UF=isNew=>[{n:'card',l:'Nº do cartão / matrícula',req:1,ro:!isNew},{n:'name',l:'Nome completo',req:1},{n:'role',l:'Perfil',t:'select',o:Object.entries(ROLE)},...(isNew?[{n:'pin',l:'PIN inicial (4 a 8 dígitos)',t:'password',req:1}]:[]),
@@ -1519,18 +1541,21 @@ async function seedDemo(){const A=api,H=36e5,N=Date.now(),iso=t=>new Date(t).toI
  for(const [c,n,r,cnh,ph] of [['1000','Robert Bento','gestor','2030-01-10','(11) 91000-0000'],['2000','Paula Mendes','recepcao',null,'(11) 92000-0000'],['3001','Ana Lima','condutor','2029-06-30','(11) 93001-0000'],['3002','Bruno Costa','condutor','2028-03-15','(11) 93002-0000'],['3003','Carla Dias','condutor',dplus(20),'(11) 93003-0000']])U[c]=(await A.createUser({card:c,name:n,role:r,cnh_validade:cnh,phone:ph,department:'B. Group'},'1234')).id;
  const co1=await A.insert('companies',{name:'NOSBEB',fleet_controls:true}),co2=await A.insert('companies',{name:'Empresa Demo B',fleet_controls:false});
  const mk=o=>A.insert('vehicles',{kml_gasolina:12,kml_alcool:8.5,oil_interval_km:10000,oil_interval_months:12,tire_interval_km:40000,tire_interval_months:48,prev_interval_km:10000,prev_interval_months:12,tire_pressure_interval_days:15,tire_pressure_last_date:dplus(-5),tire_pressure_psi_front:32,tire_pressure_psi_rear:32,licenc_due:'2027-03-31',insurance_due:'2027-05-10',has_spare_key:true,spare_key_holder:'Gestor de frota (cofre)',...o});
- const v1=await mk({company_id:co1.id,plate:'STR4D23',model:'Fiat Strada 1.3',year:2023,color:'Branco',vehicle_type:'Picape/caminhonete (caçamba)',seats:2,tank_liters:55,kml_gasolina:12.5,kml_alcool:8.7,km_current:41100,fuel_level:.75,oil_last_km:31750,oil_last_date:'2026-03-10',tire_last_km:12000,tire_last_date:'2024-11-01',prev_last_km:40100,prev_last_date:'2026-08-20',tire_pressure_last_date:dplus(-20),tire_pressure_psi_rear:35});
- const v2=await mk({company_id:co1.id,plate:'POL0A11',model:'VW Polo 1.0 TSI',year:2024,color:'Prata',vehicle_type:'Hatch/compacto',seats:5,tank_liters:52,kml_gasolina:13.5,kml_alcool:9.4,km_current:18200,fuel_level:.5,current_fuel:'alcool',oil_last_km:15000,oil_last_date:'2026-06-01',tire_last_km:0,tire_last_date:'2024-02-10',prev_last_km:10000,prev_last_date:'2025-10-15'});
- const v3=await mk({company_id:co1.id,plate:'KWD2B22',model:'Renault Kwid 1.0',year:2022,color:'Vermelho',vehicle_type:'Hatch/compacto',seats:5,tank_liters:38,kml_gasolina:14.5,kml_alcool:10,km_current:67300,fuel_level:.75,oil_last_km:60000,oil_last_date:'2026-05-02',tire_last_km:45000,tire_last_date:'2025-01-20',prev_last_km:60000,prev_last_date:'2026-05-02',insurance_due:dplus(18),has_triangle:false,has_spare_key:false});
+ const v1=await mk({company_id:co2.id,plate:'STR4D23',model:'Fiat Strada 1.3',year:2023,color:'Branco',vehicle_type:'Picape/caminhonete (caçamba)',seats:2,tank_liters:55,kml_gasolina:12.5,kml_alcool:8.7,km_current:41100,fuel_level:.75,oil_last_km:31750,oil_last_date:'2026-03-10',tire_last_km:12000,tire_last_date:'2024-11-01',prev_last_km:40100,prev_last_date:'2026-08-20',tire_pressure_last_date:dplus(-20),tire_pressure_psi_rear:35});
+ const v2=await mk({company_id:co2.id,plate:'POL0A11',model:'VW Polo 1.0 TSI',year:2024,color:'Prata',vehicle_type:'Hatch/compacto',seats:5,tank_liters:52,kml_gasolina:13.5,kml_alcool:9.4,km_current:18200,fuel_level:.5,current_fuel:'alcool',oil_last_km:15000,oil_last_date:'2026-06-01',tire_last_km:0,tire_last_date:'2024-02-10',prev_last_km:10000,prev_last_date:'2025-10-15'});
+ const v3=await mk({company_id:co2.id,plate:'KWD2B22',model:'Renault Kwid 1.0',year:2022,color:'Vermelho',vehicle_type:'Hatch/compacto',seats:5,tank_liters:38,kml_gasolina:14.5,kml_alcool:10,km_current:67300,fuel_level:.75,oil_last_km:60000,oil_last_date:'2026-05-02',tire_last_km:45000,tire_last_date:'2025-01-20',prev_last_km:60000,prev_last_date:'2026-05-02',insurance_due:dplus(18),has_triangle:false,has_spare_key:false});
  const v4=await mk({company_id:co2.id,plate:'CMP5S44',model:'Jeep Compass 1.3',year:2023,color:'Preto',vehicle_type:'SUV',seats:5,tank_liters:55,kml_gasolina:10.5,kml_alcool:7.4,km_current:30100,fuel_level:1,oil_last_km:25000,oil_last_date:'2026-04-10',tire_last_km:0,tire_last_date:'2023-06-01',prev_last_km:30000,prev_last_date:'2026-07-01'});
  const v5=await mk({company_id:co2.id,plate:'SPN7U55',model:'Chevrolet Spin 1.8',year:2021,color:'Cinza',vehicle_type:'Utilitário/van',seats:7,tank_liters:53,kml_gasolina:10,kml_alcool:7,km_current:88400,fuel_level:.5,oil_last_km:80000,oil_last_date:'2026-04-01',tire_last_km:60000,tire_last_date:'2025-03-01',prev_last_km:80000,prev_last_date:'2026-04-01'});
  const v6=await mk({company_id:co2.id,plate:'HLX9C33',model:'Toyota Hilux 2.8',year:2021,color:'Branco',vehicle_type:'Picape/caminhonete (caçamba)',seats:5,tank_liters:80,kml_gasolina:9,kml_alcool:9,km_current:98700,fuel_level:1,oil_last_km:90000,oil_last_date:'2026-02-01',tire_last_km:70000,tire_last_date:'2025-06-01',prev_last_km:90000,prev_last_date:'2026-02-01'});
+ const n1=await mk({company_id:co1.id,plate:'NBS1A11',model:'Fiat Strada Endurance',year:2024,color:'Branco',vehicle_type:'Picape/caminhonete (caçamba)',seats:2,tank_liters:55,kml_gasolina:12.5,kml_alcool:8.7,km_current:41100,fuel_level:.75,oil_last_km:31750,oil_last_date:'2026-03-10',prev_last_km:40100,prev_last_date:'2026-08-20'});
+ const n2=await mk({company_id:co1.id,plate:'NBS2B22',model:'VW Saveiro Robust',year:2023,color:'Prata',vehicle_type:'Picape/caminhonete (caçamba)',seats:2,tank_liters:52,kml_gasolina:13.5,kml_alcool:9.4,km_current:18200,fuel_level:.5,current_fuel:'alcool',oil_last_km:15000,oil_last_date:'2026-06-01',prev_last_km:10000,prev_last_date:'2025-10-15'});
+ const n3=await mk({company_id:co1.id,plate:'NBS3C33',model:'Fiat Fiorino Endurance',year:2022,color:'Branco',vehicle_type:'Utilitário/van',seats:2,tank_liters:48,kml_gasolina:14.5,kml_alcool:10,km_current:67300,fuel_level:.75,oil_last_km:60000,oil_last_date:'2026-05-02',prev_last_km:60000,prev_last_date:'2026-05-02'});
  U['3004']=(await A.createUser({card:'3004',name:'Davi Souza',role:'condutor',cnh_validade:'2029-09-01',phone:'(11) 93004-0000',department:'NOSBEB',email:'davi.souza@nosbeb.example',company_id:co1.id},'1234')).id;
  // v4: histórico de abastecimentos da frota NOSBEB (litros, valor e km) para o controle de consumo
  A.cur=U['1000'];const rf=(v,d,km,l,c,lvl,ft='gasolina',st='Posto Demo')=>A.insert('refuels',{vehicle_id:v.id,fuel_type:ft,liters:l,cost:c,km,level_after:lvl,station:st,created_at:iso(N-d*24*H)});
- await rf(v1,21,40450,44,272.8,1);await rf(v1,14,40700,20,124,.75);await rf(v1,8,40950,22.6,140,1);
- await rf(v2,15,17700,40,160,1,'alcool');await rf(v2,6,18100,43,172,1,'alcool');
- await rf(v3,20,66700,28,171,1);await rf(v3,9,67150,45,279,1);
+ await rf(n1,21,40450,44,272.8,1);await rf(n1,14,40700,20,124,.75);await rf(n1,8,40950,22.6,140,1);
+ await rf(n2,15,17700,40,160,1,'alcool');await rf(n2,6,18100,43,172,1,'alcool');
+ await rf(n3,20,66700,28,171,1);await rf(n3,9,67150,45,279,1);
  const photos=async(v,iid,dmg={})=>{const ph={};for(const a of ANGLES){const p=`${v.id}/${iid}/${a.k}.jpg`;await A.upload(p,await dataURLtoBlob(demoImage(v.plate+'|'+a.k,a.l,{damage:dmg[a.k]||'none'})));ph[a.k]=p}return ph};
  const okItems=(ref)=>ANGLES.map(a=>ref?{k:a.k,label:a.l,status:'ok',sim:95,cells:[],text:'Nenhuma diferença relevante em relação à referência.'}:{k:a.k,label:a.l,status:'baseline',text:'Sem vistoria de referência: esta foto passa a ser a referência.'});
  const allOk=Object.fromEntries(CHECKS.map(c=>[c[0],'ok']));let lastRef={};
@@ -1562,10 +1587,11 @@ async function seedDemo(){const A=api,H=36e5,N=Date.now(),iso=t=>new Date(t).toI
   chk=async(v,drv,dueD,nc,fuel,notes)=>{A.cur=drv;const id=uuid(),base=`nosbeb/${v.id}/${id}`;
   await A.upload(base+'/agua.jpg',await dataURLtoBlob(demoChkImage('agua',v.plate)));await A.upload(base+'/oleo.jpg',await dataURLtoBlob(demoChkImage('oleo',v.plate)));
   const it=mkItems(nc);for(const k of Object.keys(nc)){const p=`${base}/item_${k}_1.jpg`;await A.upload(p,await dataURLtoBlob(demoImage(v.plate+'|lat_esq','evidência',{damage:'small'})));it[k].photos=[p]}
-  await A.insert('nosbeb_checklists',{id,vehicle_id:v.id,km:A.V(v.id).km_current,items:it,fuel_ok:fuel,notes,water_photo:base+'/agua.jpg',oil_photo:base+'/oleo.jpg'});
+  const ph={};for(const k of EXT){const p=`${base}/${k}.jpg`;await A.upload(p,await dataURLtoBlob(demoImage(v.plate+'|'+k,'checklist',{damage:'none'})));ph[k]=p}
+  await A.insert('nosbeb_checklists',{id,vehicle_id:v.id,km:A.V(v.id).km_current,items:it,photos:ph,fuel_ok:fuel,notes,water_photo:base+'/agua.jpg',oil_photo:base+'/oleo.jpg'});
   Object.assign(A.t.nosbeb_checklists.find(x=>x.id===id),{created_at:new Date(Math.min(Date.now()-60e3,+new Date(dueD+'T07:30:00'))).toISOString(),due_date:dueD,on_schedule:true})};
- await chk(v1,U['3004'],due0,{},true,null);
- await chk(v3,U['3004'],lastDue(addDays(due0,-1)),{pneus_dianteiros:'Pneu dianteiro esquerdo com desgaste irregular',oleo_motor:'Nível próximo do mínimo'},false,'Completar óleo e abastecer.');
+ await chk(n1,U['3004'],due0,{},true,null);
+ await chk(n3,U['3004'],lastDue(addDays(due0,-1)),{pneus_dianteiros:'Pneu dianteiro esquerdo com desgaste irregular',oleo_motor:'Nível próximo do mínimo'},false,'Completar óleo e abastecer.');
  A.cur=U['1000'];A.t.notifications=[];A.sys=false;
  // ações "ao vivo" (geram as notificações de cada perfil)
  A.cur=U['3001'];const bA=await A.insert('bookings',{driver_id:U['3001'],start_at:at(0,19),end_at:at(0,22),destination:'Cliente Sorocaba',purpose:'Visita técnica',passengers:1,vehicle_type_requested:'Picape/caminhonete (caçamba)',carries_cargo:true,cargo_description:'Amostras em caixas',est_km:190});
@@ -1593,7 +1619,7 @@ async function seedDemo(){const A=api,H=36e5,N=Date.now(),iso=t=>new Date(t).toI
  navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.link&&ME)navigate(e.data.link)});
  const lk=new URLSearchParams(location.search).get('link');if(lk){if(ME)navigate(lk);else sessionStorage.setItem('fc_link',lk)}
 })();
-setInterval(()=>{if(ME&&['chaves','painel','agenda','solicitacoes'].includes(view)&&!$('#modal').classList.contains('on')&&$('#busy').style.display!=='flex'&&!PK)refresh()},60000);
+setInterval(()=>{if(ME&&['chaves','painel','agenda','solicitacoes','inicio'].includes(view)&&!$('#modal').classList.contains('on')&&$('#busy').style.display!=='flex'&&!PK)refresh()},60000);
 </script>
 </body>
 </html>
