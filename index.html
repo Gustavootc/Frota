@@ -108,6 +108,7 @@ th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase}
 .term{border:2px solid var(--bad);background:#fff7f7;border-radius:10px;padding:12px;font-size:15px;line-height:1.45}
 .onlyprint{display:none}
 /* v4 */
+.dbox{position:absolute;border:2px solid #dc2626;background:rgba(220,38,38,.16);border-radius:3px;pointer-events:none}
 .chip{display:inline-block;padding:7px 12px;border:1px solid #cbd5e1;border-radius:99px;background:#fff;cursor:pointer;font-size:13px;margin:0 4px 6px 0}.chip.on{background:var(--pri2);border-color:var(--pri);color:var(--pri);font-weight:600}
 .tag2{display:inline-block;font-size:11px;padding:1px 7px;border-radius:6px;background:#e2e8f0;color:#334155;margin-right:4px}
 @media print{body>*:not(#modal){display:none!important}#modal{position:static;display:block;background:none;padding:0;overflow:visible}#modal .box{max-width:none;padding:0}.noprint{display:none!important}.onlyprint{display:block}.card{break-inside:avoid}}
@@ -141,6 +142,7 @@ const CONFIG={
   VAPID_PUBLIC_KEY:'',             // chave pública VAPID para Web Push (veja LEIAME.md)
   ALERTS_FALLBACK_MIN:15,          // app do gestor roda os alertas periódicos se o pg_cron não estiver ativo
   TEST_PHOTOS:false,               // mostra botões de "foto de teste" também no modo real
+  CAR_DETECTOR:true,               // análise de fotos: localiza o veículo (carrega ~6 MB da pasta ml/ na 1ª vez) e avalia só a lataria; false = modo reserva sem detector
   CONSUMPTION_ALERT_PCT:25,        // alerta quando o km/L do último intervalo (tanque cheio→cheio) ficar X% abaixo do rendimento cadastrado
   DIVERGENCE:{KM_PCT:25,KM_ABS:15,KM_GAP:10,TIME_MIN:60,MAX_AVG_KMH:90}  // tolerâncias da tela Divergências (ajuste conforme a operação)
 };
@@ -874,70 +876,158 @@ VIEWS.inicioRecep=()=>{const t=today(),day=typeof VARG==='string'&&VARG?VARG:t,n
 const shiftDay=(d,n)=>addDays(d,n);
 VIEWS.inicio=()=>ME.role==='recepcao'?VIEWS.inicioRecep():VIEWS.inicioCond();
 
-/* ======================= visão computacional local (v3) =======================
-   Comparação de fotos de vistoria:
-   1) normaliza as duas imagens para 4:3 (recorte "cover") em 128×96;
-   2) alinhamento global por busca de escala (±10%) e deslocamento (correlação normalizada de gradientes);
-   3) por célula (grade 8×6): SSIM de estrutura/contraste (robusto à iluminação), luminância relativa
-      (corrigida pelo ganho global mediano) e cromaticidade (corrigida pelo desvio global mediano);
-   4) LIMIAR ABSOLUTO calibrado + critério relativo (nunca só relativo) e SIMILARIDADE GLOBAL:
-      sim < 75% ⇒ no mínimo "warn"; sim < 55% ⇒ "bad". Isso garante que avarias enormes sejam detectadas.
-   Retorno padronizado: {status, sim, cells, regions, text, engine, framing, ncc, align}. */
-const VIS={W:128,H:96,GX:8,GY:6,T_ABS:.55,T_LOW:.35,SIM_WARN:75,SIM_BAD:55,NCC_FRAMING:.35};
+/* ======================= visão computacional local (v4) =======================
+   Comparação de fotos de vistoria, focada na LATARIA (o fundo é ignorado):
+   1) normaliza as fotos para 4:3 em 256×192 (4× mais detalhe que a v3, para enxergar riscos finos);
+   2) alinhamento por pirâmide (32×24 → 256×192): escala 0,6×–1,7× e deslocamento, correlação normalizada de
+      gradientes; se não houver correspondência, é "enquadramento diferente" (e não avaria);
+   3) normalização de luz por canal (mediana do ganho, ignorando pixels estourados);
+   4) MÁSCARA DA LATARIA: região contínua onde as duas fotos concordam em luz, cor e estrutura (o carro é o mesmo;
+      o fundo muda). Fecha buracos (riscos/amassados ficam DENTRO da máscara) e recua a borda (silhueta);
+   5) dentro da máscara: erro fino = luz, cor e BORDAS NOVAS/AUSENTES (com tolerância de ±3 px ao alinhamento);
+      agrupa em manchas e avalia tamanho e contraste. Diferenças fora da máscara (fundo, outro carro ao lado) não contam.
+   Retorno padronizado: {status, sim, cells, boxes, regions, text, engine, framing, ncc, align, body}. */
+const VIS={DETECT:false,ML_BASE:'ml/',W:256,H:192,GX:8,GY:6,NCC_FRAMING:.28,MIN_BODY:.10,T_MASK:1,T_EDGE:13,MIN_EDGE:36,MIN_TONE:90,MIN_STRONG:24,MISS_MAX:.35,NCC_SAME:.7,MIN_CENTER:.5,T_SMOOTH:14,MIN_PAINT:.5};
 async function visLoad(src,W,H){const im=await loadImg(src);const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});
  const ar=W/H,iar=im.width/im.height;let sw=im.width,sh=im.height,sx=0,sy=0;if(iar>ar){sw=im.height*ar;sx=(im.width-sw)/2}else{sh=im.width/ar;sy=(im.height-sh)/2}
  x.drawImage(im,sx,sy,sw,sh,0,0,W,H);const d=x.getImageData(0,0,W,H).data,n=W*H,r=new Float32Array(n),g=new Float32Array(n),b=new Float32Array(n),l=new Float32Array(n);
- for(let i=0;i<n;i++){r[i]=d[i*4];g[i]=d[i*4+1];b[i]=d[i*4+2];l[i]=.299*r[i]+.587*g[i]+.114*b[i]}return{r,g,b,l,W,H}}
-function visBlur(a,W,H){const o=new Float32Array(a.length);for(let y=0;y<H;y++)for(let x=0;x<W;x++){let s=0,n=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const xx=x+dx,yy=y+dy;if(xx>=0&&yy>=0&&xx<W&&yy<H){s+=a[yy*W+xx];n++}}o[y*W+x]=s/n}return o}
+ for(let i=0;i<n;i++){r[i]=d[i*4];g[i]=d[i*4+1];b[i]=d[i*4+2];l[i]=.299*r[i]+.587*g[i]+.114*b[i]}return{r,g,b,l,W,H,crop:{sx,sy,sw,sh}}}
+// detector de veículo (COCO-SSD lite quantizado, ~6 MB, carregado só na 1ª análise; roda no aparelho). Sem ele, a análise segue pelo modo reserva.
+const visScript=src=>new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=()=>rej(new Error('falha ao carregar '+src));document.head.appendChild(s)});
+let _visML=null;const _visCars=new Map();
+function visModel(){if(!_visML)_visML=(async()=>{await visScript(VIS.ML_BASE+'tf.min.js');await visScript(VIS.ML_BASE+'coco-ssd.min.js');let ok=false;try{ok=await tf.setBackend('webgl')}catch(e){}if(!ok||tf.getBackend()!=='webgl')await tf.setBackend('cpu');await tf.ready();
+  return cocoSsd.load({base:'lite_mobilenet_v2',modelUrl:VIS.ML_BASE+'modelo/model.json'})})().catch(e=>{console.warn('detector de veículo indisponível; seguindo sem ele',e);return null});return _visML}
+async function visCar(src){if(_visCars.has(src))return _visCars.get(src);const m=await visModel();let out=null;if(m){try{const im=await loadImg(src),d=(await m.detect(im,8,.15)).filter(x=>['car','truck','bus'].includes(x.class)&&x.score>=.15);
+  if(d.length){d.sort((a,b)=>b.bbox[2]*b.bbox[3]*b.score-a.bbox[2]*a.bbox[3]*a.score);out={bbox:d[0].bbox,score:d[0].score}}}catch(e){console.warn('detecção falhou',e)}}
+ if(_visCars.size>12)_visCars.clear();_visCars.set(src,out);return out}
+// média móvel separável (borda replicada), raio r
+function visBox(a,W,H,r){const t=new Float32Array(a.length),o=new Float32Array(a.length),n=2*r+1;
+ for(let y=0;y<H;y++){const row=y*W;let s=0;for(let k=-r;k<=r;k++)s+=a[row+Math.min(W-1,Math.max(0,k))];for(let x=0;x<W;x++){t[row+x]=s/n;s+=a[row+Math.min(W-1,x+r+1)]-a[row+Math.max(0,x-r)]}}
+ for(let x=0;x<W;x++){let s=0;for(let k=-r;k<=r;k++)s+=t[Math.min(H-1,Math.max(0,k))*W+x];for(let y=0;y<H;y++){o[y*W+x]=s/n;s+=t[Math.min(H-1,y+r+1)*W+x]-t[Math.max(0,y-r)*W+x]}}return o}
+function visMaxF(a,W,H,r){const t=new Float32Array(a.length),o=new Float32Array(a.length);
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){let m=-1e9;for(let k=-r;k<=r;k++){const xx=x+k;if(xx>=0&&xx<W){const v=a[y*W+xx];if(v>m)m=v}}t[y*W+x]=m}
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){let m=-1e9;for(let k=-r;k<=r;k++){const yy=y+k;if(yy>=0&&yy<H){const v=t[yy*W+x];if(v>m)m=v}}o[y*W+x]=m}return o}
 function visDown(a,W,H){const w=W>>1,h=H>>1,o=new Float32Array(w*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++)o[y*w+x]=(a[2*y*W+2*x]+a[2*y*W+2*x+1]+a[(2*y+1)*W+2*x]+a[(2*y+1)*W+2*x+1])/4;return o}
 function visGrad(a,W,H){const o=new Float32Array(a.length);for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const gx=a[y*W+x+1]-a[y*W+x-1],gy=a[(y+1)*W+x]-a[(y-1)*W+x];o[y*W+x]=Math.sqrt(gx*gx+gy*gy)}return o}
-// amostra a imagem "a" no ponto (x,y) transformado: x' = cx + (x-cx)*s + dx (bilinear)
+// amostra a imagem "a" no ponto transformado x' = cx + (x-cx)*s + dx (bilinear); s<1 amplia a imagem
 function visWarp(a,W,H,s,dx,dy){const o=new Float32Array(W*H),cx=W/2,cy=H/2;for(let y=0;y<H;y++)for(let x=0;x<W;x++){let X=cx+(x-cx)*s+dx,Y=cy+(y-cy)*s+dy;X=Math.max(0,Math.min(W-1.001,X));Y=Math.max(0,Math.min(H-1.001,Y));const x0=X|0,y0=Y|0,fx=X-x0,fy=Y-y0,i=y0*W+x0;
  o[y*W+x]=a[i]*(1-fx)*(1-fy)+a[i+1]*fx*(1-fy)+a[i+W]*(1-fx)*fy+a[i+W+1]*fx*fy}return o}
+function visValid(W,H,s,dx,dy){const o=new Uint8Array(W*H),cx=W/2,cy=H/2;for(let y=0;y<H;y++)for(let x=0;x<W;x++){const X=cx+(x-cx)*s+dx,Y=cy+(y-cy)*s+dy;o[y*W+x]=X>=0&&Y>=0&&X<=W-1&&Y<=H-1?1:0}return o}
 function visNCC(A,B,W,H,m){let sa=0,sb=0,n=0;for(let y=m;y<H-m;y++)for(let x=m;x<W-m;x++){sa+=A[y*W+x];sb+=B[y*W+x];n++}const ma=sa/n,mb=sb/n;let num=0,da=0,db=0;
  for(let y=m;y<H-m;y++)for(let x=m;x<W-m;x++){const a=A[y*W+x]-ma,b=B[y*W+x]-mb;num+=a*b;da+=a*a;db+=b*b}return num/Math.sqrt(da*db+1e-9)}
-function visAlign(P,C){// busca grosseira em 64×48 sobre gradientes, refinamento em 128×96
- const W=P.W,H=P.H,w=W>>1,h=H>>1;const gp=visBlur(visGrad(visDown(P.l,W,H),w,h),w,h),gcs=visDown(C.l,W,H);let best={ncc:-2,s:1,dx:0,dy:0};
- for(const s of [.9,.95,1,1.05,1.1]){const gs=null;for(let dy=-6;dy<=6;dy+=1)for(let dx=-8;dx<=8;dx+=1){const gc=visBlur(visGrad(visWarp(gcs,w,h,s,dx,dy),w,h),w,h);const v=visNCC(gp,gc,w,h,4);if(v>best.ncc)best={ncc:v,s,dx,dy}}}
- const GP=visBlur(visGrad(P.l,W,H),W,H);let fin={ncc:-2,s:best.s,dx:best.dx*2,dy:best.dy*2};
- for(const ds of [-.02,0,.02])for(let ddy=-1;ddy<=1;ddy++)for(let ddx=-1;ddx<=1;ddx++){const s=best.s+ds,dx=best.dx*2+ddx,dy=best.dy*2+ddy;const v=visNCC(GP,visBlur(visGrad(visWarp(C.l,W,H,s,dx,dy),W,H),W,H),W,H,6);if(v>fin.ncc)fin={ncc:v,s,dx,dy}}
- return fin}
 const visMed=a=>{const s=[...a].sort((x,y)=>x-y);return s[s.length>>1]};
+// alinhamento em pirâmide: 32×24 (busca ampla) → 64×48 → 128×96 → 256×192 (refino)
+function visAlign(P,C){const W=P.W,H=P.H;let pl=[P.l],cl=[C.l],ws=[W],hs=[H];
+ for(let k=0;k<3;k++){pl.push(visDown(pl[k],ws[k],hs[k]));cl.push(visDown(cl[k],ws[k],hs[k]));ws.push(ws[k]>>1);hs.push(hs[k]>>1)}
+ const G=(a,w,h)=>visBox(visGrad(a,w,h),w,h,1),ev=(lv,s,dx,dy,gp,m)=>visNCC(gp,G(visWarp(cl[lv],ws[lv],hs[lv],s,dx,dy),ws[lv],hs[lv]),ws[lv],hs[lv],m);
+ const g3=G(pl[3],ws[3],hs[3]);const cand=[];
+ for(const s of [.6,.7,.8,.9,.95,1,1.05,1.1,1.25,1.45,1.7])for(let dy=-6;dy<=6;dy++)for(let dx=-8;dx<=8;dx++)cand.push({ncc:ev(3,s,dx,dy,g3,2),s,dx,dy});
+ cand.sort((a,b)=>b.ncc-a.ncc);const tops=[];for(const c of cand){if(tops.length>=3)break;if(!tops.some(t=>Math.abs(t.s-c.s)<.07&&Math.abs(t.dx-c.dx)<3&&Math.abs(t.dy-c.dy)<3))tops.push(c)}
+ // refino por nível: o deslocamento dobra a cada nível
+ let best=null;const g2=G(pl[2],ws[2],hs[2]);
+ for(const t of tops){let b={ncc:-2,s:t.s,dx:t.dx*2,dy:t.dy*2};for(const ds of [-.04,-.02,0,.02,.04])for(let ddy=-2;ddy<=2;ddy++)for(let ddx=-2;ddx<=2;ddx++){const s=t.s+ds,dx=t.dx*2+ddx,dy=t.dy*2+ddy,v=ev(2,s,dx,dy,g2,3);if(v>b.ncc)b={ncc:v,s,dx,dy}}if(!best||b.ncc>best.ncc)best=b}
+ const g1=G(pl[1],ws[1],hs[1]);let f1={ncc:-2,s:best.s,dx:best.dx*2,dy:best.dy*2};
+ for(const ds of [-.015,0,.015])for(let ddy=-1;ddy<=1;ddy++)for(let ddx=-1;ddx<=1;ddx++){const s=best.s+ds,dx=best.dx*2+ddx,dy=best.dy*2+ddy,v=ev(1,s,dx,dy,g1,4);if(v>f1.ncc)f1={ncc:v,s,dx,dy}}
+ const g0=G(pl[0],ws[0],hs[0]);let f0={ncc:-2,s:f1.s,dx:f1.dx*2,dy:f1.dy*2};
+ for(const ds of [-.008,0,.008])for(let ddy=-1;ddy<=1;ddy++)for(let ddx=-1;ddx<=1;ddx++){const s=f1.s+ds,dx=f1.dx*2+ddx,dy=f1.dy*2+ddy,v=ev(0,s,dx,dy,g0,8);if(v>f0.ncc)f0={ncc:v,s,dx,dy}}
+ return f0}
+function visLabel(bin,W,H){const lab=new Int32Array(W*H),comps=[],st=new Int32Array(W*H);let id=0;
+ for(let i=0;i<W*H;i++){if(!bin[i]||lab[i])continue;id++;let sp=0,x0=W,x1=0,y0=H,y1=0;const px=[];st[sp++]=i;lab[i]=id;
+  while(sp){const j=st[--sp],x=j%W,y=(j/W)|0;px.push(j);if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
+   if(x>0&&bin[j-1]&&!lab[j-1]){lab[j-1]=id;st[sp++]=j-1}if(x<W-1&&bin[j+1]&&!lab[j+1]){lab[j+1]=id;st[sp++]=j+1}if(y>0&&bin[j-W]&&!lab[j-W]){lab[j-W]=id;st[sp++]=j-W}if(y<H-1&&bin[j+W]&&!lab[j+W]){lab[j+W]=id;st[sp++]=j+W}}
+  comps.push({id,area:px.length,x0,x1,y0,y1,px})}return{lab,comps}}
+const visDil=(m,W,H,r)=>{const f=visBox(Float32Array.from(m),W,H,r),o=new Uint8Array(m.length);for(let i=0;i<m.length;i++)o[i]=f[i]>0.0001?1:0;return o};
+const visEro=(m,W,H,r)=>{const f=visBox(Float32Array.from(m,v=>v?0:1),W,H,r),o=new Uint8Array(m.length);for(let i=0;i<m.length;i++)o[i]=f[i]>0.0001?0:1;return o};
+function visFillHoles(m,W,H){const out=new Uint8Array(m),st=new Int32Array(W*H),seen=new Uint8Array(W*H);let sp=0;
+ const push=i=>{if(!m[i]&&!seen[i]){seen[i]=1;st[sp++]=i}};for(let x=0;x<W;x++){push(x);push((H-1)*W+x)}for(let y=0;y<H;y++){push(y*W);push(y*W+W-1)}
+ while(sp){const j=st[--sp],x=j%W,y=(j/W)|0;if(x>0)push(j-1);if(x<W-1)push(j+1);if(y>0)push(j-W);if(y<H-1)push(j+W)}
+ for(let i=0;i<W*H;i++)if(!m[i]&&!seen[i])out[i]=1;return out}
 async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
- const {W,H,GX,GY}=VIS,cw=W/GX,ch=H/GY;const P=await visLoad(prevSrc,W,H),C0=await visLoad(curSrc,W,H);
- const al=visAlign(P,C0);const C={l:visWarp(C0.l,W,H,al.s,al.dx,al.dy),r:visWarp(C0.r,W,H,al.s,al.dx,al.dy),g:visWarp(C0.g,W,H,al.s,al.dx,al.dy),b:visWarp(C0.b,W,H,al.s,al.dx,al.dy)};
- const Pl=visBlur(P.l,W,H),Cl=visBlur(C.l,W,H);
- // estatísticas por célula
- const st=[];for(let cy=0;cy<GY;cy++)for(let cx=0;cx<GX;cx++){let n=0,mp=0,mc=0,rp=0,gp=0,bp=0,rc=0,gc=0,bc=0,sat=0,mpu=0,mcu=0,nu=0;
-  for(let y=cy*ch;y<(cy+1)*ch;y++)for(let x=cx*cw;x<(cx+1)*cw;x++){const i=y*W+x;if(P.l[i]>=240||C.l[i]>=240)sat++;else{mpu+=P.l[i];mcu+=C.l[i];nu++;rp+=P.r[i];gp+=P.g[i];bp+=P.b[i];rc+=C.r[i];gc+=C.g[i];bc+=C.b[i]}mp+=Pl[i];mc+=Cl[i];n++}   // cor e luz só dos pixels não saturados
-  mp/=n;mc/=n;let vp=0,vc=0,cv=0;for(let y=cy*ch;y<(cy+1)*ch;y++)for(let x=cx*cw;x<(cx+1)*cw;x++){const i=y*W+x,a=Pl[i]-mp,b=Cl[i]-mc;vp+=a*a;vc+=b*b;cv+=a*b}vp/=n;vc/=n;cv/=n;
-  const C3=(0.03*255)**2*.25;const ssim=(cv+C3)/(Math.sqrt(vp*vc)+C3);               // termo de ESTRUTURA do SSIM (correlação local): robusto a luz e contraste
-  const sp=rp+gp+bp+1,sc=rc+gc+bc+1;st.push({cx,cy,mp,mc,ssim,sat:sat/n,lp:nu>n*.3?mpu/nu:null,lc:nu>n*.3?mcu/nu:null,chp:[rp/sp,gp/sp],chc:[rc/sc,gc/sc],var:Math.max(vp,vc)})}
- // correções globais robustas (mediana): ganho de luz e desvio de cor
- const gain=visMed(st.filter(s=>s.lp!=null).map(s=>Math.log((s.lc+8)/(s.lp+8)))),dr=visMed(st.map(s=>s.chc[0]-s.chp[0])),dg=visMed(st.map(s=>s.chc[1]-s.chp[1]));
- for(const s of st){/* luminância relativa ignorando pixels saturados (flash, faróis, placa refletiva) */const lum=s.lp==null?0:Math.abs(Math.log((s.lc+8)/(s.lp+8))-gain)/.45;const chr=s.lp==null?0:Math.hypot(s.chc[0]-s.chp[0]-dr,s.chc[1]-s.chp[1]-dg)/.06;const tex=Math.max(0,1-s.ssim)/.6;
-  s.d=Math.max(lum,chr,tex)*.55}  // d≈0 igual; d≥T_ABS alteração forte
- const ds=st.map(s=>s.d),med=visMed(ds);
- // limiar ABSOLUTO + relativo (o relativo só acrescenta células, nunca esconde)
- // luz muito diferente (ex.: noite × dia): limiares 25% mais tolerantes
- const lightK=Math.abs(gain)>.7?1.25:1,TA=VIS.T_ABS*lightK,TL=VIS.T_LOW*lightK;
- const flagged=st.filter(s=>s.d>=TA||(s.d>=TL&&s.d>=med*3));
- const sim=Math.round(100*Math.max(0,1-ds.reduce((a,b)=>a+Math.min(1,b),0)/ds.length));
- const framing=al.ncc<VIS.NCC_FRAMING&&sim<VIS.SIM_WARN;
- // vizinhança: 2+ células adjacentes sinalizadas = região contínua (avaria)
- const strong=flagged.filter(s=>s.d>=TA);   // acima do limiar ABSOLUTO
- const adj=strong.some(a=>strong.some(b=>b!==a&&Math.abs(a.cx-b.cx)+Math.abs(a.cy-b.cy)===1));
- let status='ok';
- if(strong.length>=3||(strong.length>=2&&adj)||strong.some(s=>s.d>=TA*1.8))status='bad';else if(flagged.length)status='warn';
- if(sim<VIS.SIM_BAD)status='bad';else if(sim<VIS.SIM_WARN&&status==='ok')status='warn';
- const regions=[...new Set(flagged.slice().sort((a,b)=>b.d-a.d).slice(0,4).map(c=>REGION(c.cx,c.cy)))];
- const text=framing?'Grande diferença em relação à referência: pode ser avaria grande ou enquadramento/veículo diferente. Confira; se o enquadramento estiver diferente, refaça a foto alinhando com a imagem fantasma.'
-  :status==='ok'?'Nenhuma diferença relevante em relação à referência.'
-  
-  :status==='warn'?`Pequenas diferenças${regions.length?' ('+regions.join(', ')+')':''}. ${lightK>1?' Iluminação bem diferente da referência.':''} Pode ser sujeira, reflexo ou enquadramento: confirme visualmente.`
-  :`Alterações significativas${regions.length?' em '+regions.join(', '):''}${sim<VIS.SIM_BAD?' (grande parte da imagem mudou)':''}. Possível amassado, risco, peça faltando ou dano novo.`;
- return{status,sim,cells:flagged.map(c=>({cx:c.cx,cy:c.cy,s:Math.round(Math.min(1,c.d)*100)/100})),regions,text,engine:'local-v3',framing,light:Math.round(Math.exp(gain)*100)/100,ncc:Math.round(al.ncc*100)/100,align:{s:al.s,dx:al.dx,dy:al.dy}}}
+ const {W,H,GX,GY}=VIS,N=W*H,P=await visLoad(prevSrc,W,H),C0=await visLoad(curSrc,W,H);
+ const al=visAlign(P,C0),val=visValid(W,H,al.s,al.dx,al.dy),wr=a=>visWarp(a,W,H,al.s,al.dx,al.dy);
+ let Cr=wr(C0.r),Cg=wr(C0.g),Cbl=wr(C0.b);
+ // ganho de luz por canal: mediana do log da razão (pixels válidos e não estourados)
+ const gainOf=(Pa,Ca)=>{const L=[];for(let i=0;i<N;i+=3)if(val[i]&&Pa[i]<235&&Ca[i]<235&&Pa[i]>12)L.push(Math.log((Ca[i]+8)/(Pa[i]+8)));return L.length>50?visMed(L):0};
+ const gr=gainOf(P.r,Cr),gg=gainOf(P.g,Cg),gb=gainOf(P.b,Cbl),gl=(gr+gg+gb)/3;
+ const fix=(a,g)=>a.map(v=>Math.min(255,Math.max(0,(v+8)*Math.exp(-g)-8)));Cr=fix(Cr,gr);Cg=fix(Cg,gg);Cbl=fix(Cbl,gb);
+ const Cl=new Float32Array(N);for(let i=0;i<N;i++)Cl[i]=.299*Cr[i]+.587*Cg[i]+.114*Cbl[i];
+ const Pb=visBox(visBox(P.l,W,H,1),W,H,1),Cb=visBox(visBox(Cl,W,H,1),W,H,1);
+ // erros normalizados (1 = diferença "relevante"): luz, cor e bordas novas/ausentes
+ const Ei=new Float32Array(N),Ec=new Float32Array(N);
+ const sP=P.r.map((v,i)=>v+P.g[i]+P.b[i]+1),sC=Cr.map((v,i)=>v+Cg[i]+Cbl[i]+1),pr=visBox(P.r.map((v,i)=>v/sP[i]),W,H,2),pg=visBox(P.g.map((v,i)=>v/sP[i]),W,H,2),cr=visBox(Cr.map((v,i)=>v/sC[i]),W,H,2),cg=visBox(Cg.map((v,i)=>v/sC[i]),W,H,2);
+ const LR=18,bpL=visBox(Pb,W,H,LR),bcL=visBox(Cb,W,H,LR),gmap=new Float32Array(N),dR=new Float32Array(N),dG=new Float32Array(N);
+ for(let i=0;i<N;i++){gmap[i]=(bpL[i]+4)/(bcL[i]+4);dR[i]=cr[i]-pr[i];dG[i]=cg[i]-pg[i]}
+ const mR=visBox(dR,W,H,LR),mG=visBox(dG,W,H,LR);
+ for(let i=0;i<N;i++){Ei[i]=Math.abs(Cb[i]*gmap[i]-Pb[i])/(24+.07*Pb[i]);Ec[i]=Pb[i]<28?0:Math.hypot(dR[i]-mR[i],dG[i]-mG[i])/.05}
+ const Cbn=Cb.map((v,i)=>v*gmap[i]),Gp=visGrad(Pb,W,H),Gc=visGrad(Cbn,W,H),Gp3=visMaxF(Gp,W,H,3),Gc3=visMaxF(Gc,W,H,3),Eg=new Float32Array(N);
+ for(let i=0;i<N;i++)Eg[i]=Math.max(0,Gc[i]-Gp3[i],Gp[i]-Gc3[i])/15;
+ // retângulo do veículo (detector) no quadro da referência; o fundo fora dele não é avaliado
+ let carBox=null;
+ if(VIS.DETECT&&ctx.detect!==false){let dc=await visCar(curSrc),fromCur=true;if(!dc){dc=await visCar(prevSrc);fromCur=false}
+  if(dc){const cr=(fromCur?C0:P).crop,[bx,by,bw,bh]=dc.bbox;let x0=(bx-cr.sx)/cr.sw*W,x1=(bx+bw-cr.sx)/cr.sw*W,y0=(by-cr.sy)/cr.sh*H,y1=(by+bh-cr.sy)/cr.sh*H;
+   if(fromCur){const mp=(X,c)=>c+(X-c)/al.s;const cx=W/2,cy=H/2;x0=cx+(x0-al.dx-cx)/al.s;x1=cx+(x1-al.dx-cx)/al.s;y0=cy+(y0-al.dy-cy)/al.s;y1=cy+(y1-al.dy-cy)/al.s}
+   const mw=(x1-x0)*.02,mh=(y1-y0)*.02;carBox={x0:Math.max(0,x0+mw),x1:Math.min(W,x1-mw),y0:Math.max(0,y0+mh),y1:Math.min(H,y1-mh),score:dc.score};if(carBox.x1-carBox.x0<W*.15||carBox.y1-carBox.y0<H*.15)carBox=null}}
+ // 1) máscara da lataria: maior região contínua em que as fotos concordam (o fundo, que muda, fica de fora)
+ const clamp=(a,m)=>a.map(v=>Math.min(m,v)),Em=new Float32Array(N),b1=visBox(clamp(Ei,3),W,H,5),b2=visBox(clamp(Ec,3),W,H,5),b3=visBox(clamp(Eg,3),W,H,5);
+ for(let i=0;i<N;i++)Em[i]=val[i]?Math.max(b1[i]/.8,b2[i]/.8,b3[i]/.3):9;
+ const agree=new Uint8Array(N);for(let i=0;i<N;i++)agree[i]=Em[i]<VIS.T_MASK?1:0;
+ const L=visLabel(agree,W,H);let big=null;for(const c of L.comps){const cx=(c.x0+c.x1)/2/W,cy=(c.y0+c.y1)/2/H,w=c.area*(1-Math.min(.5,Math.hypot(cx-.5,cy-.5)));if(!big||w>big.w)big={c,w}}
+ let M=new Uint8Array(N);if(big)for(const j of big.c.px)M[j]=1;
+ M=visFillHoles(visEro(visDil(M,W,H,6),W,H,6),W,H);M=visEro(M,W,H,4);   // fecha buracos (riscos/amassados ficam dentro) e recua da silhueta
+ let boxArea=N;let covBox=null;
+ if(carBox){boxArea=(carBox.x1-carBox.x0)*(carBox.y1-carBox.y0);let ci=0,cn2=0;const bx0=carBox.x0+(carBox.x1-carBox.x0)*.3,bx1=carBox.x1-(carBox.x1-carBox.x0)*.3,by0=carBox.y0+(carBox.y1-carBox.y0)*.3,by1=carBox.y1-(carBox.y1-carBox.y0)*.3;
+  for(let y=Math.round(by0);y<Math.round(by1);y++)for(let x=Math.round(bx0);x<Math.round(bx1);x++){cn2++;ci+=M[y*W+x]}covBox=cn2?ci/cn2:0;
+  // só o que está dentro do retângulo do carro e que não é vidro/peça escura (janelas, pneus, grade): não é lataria
+  const inb=[];for(let y=Math.round(carBox.y0);y<Math.round(carBox.y1);y++)for(let x=Math.round(carBox.x0);x<Math.round(carBox.x1);x++)inb.push(Pb[y*W+x]);const med=visMed(inb);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=y*W+x;if(x<carBox.x0||x>=carBox.x1||y<carBox.y0||y>=carBox.y1||Pb[i]<.5*med)M[i]=0}}
+ let mArea=0;for(let i=0;i<N;i++)mArea+=M[i];const body=mArea/boxArea;
+ let cin=0,cn=0;for(let y=Math.round(H*.3);y<Math.round(H*.8);y++)for(let x=Math.round(W*.25);x<Math.round(W*.75);x++){cn++;cin+=M[y*W+x]}const cov=covBox!=null?covBox:cin/cn,lost=body<(carBox?.18:VIS.MIN_BODY)||cov<VIS.MIN_CENTER;
+ const bigChange=lost&&al.ncc>=VIS.NCC_SAME,framing=!bigChange&&(al.ncc<VIS.NCC_FRAMING||lost);
+ const lightK=Math.abs(gl)>.3?1.5:1,blobs=[];let TT=null,EE=null,M2=null;   // luz muito diferente (dia × noite): limiares 50% mais tolerantes
+ if(!framing){
+  // 2a) tom/cor (amassados, repintura, peça diferente): em 256×192, só dentro da lataria
+  const Es=new Float32Array(N),ei=visBox(Ei,W,H,2),ec=visBox(Ec,W,H,2);for(let i=0;i<N;i++)Es[i]=M[i]?Math.max(ei[i]/.9,ec[i]/.9):0;
+  const T=new Uint8Array(N);for(let i=0;i<N;i++)T[i]=Es[i]>=lightK?1:0;TT=T;
+  for(const c of visLabel(visDil(T,W,H,1),W,H).comps){let n=0,s=0;for(const j of c.px)if(T[j]){n++;s+=Math.min(3,Es[j])}if(n>=VIS.MIN_TONE)blobs.push({kind:'tom',core:n,eq:n,mean:s/n,x0:c.x0/W,x1:(c.x1+1)/W,y0:c.y0/H,y1:(c.y1+1)/H,px:c.px.map(j=>j)})}
+  // 2b) bordas novas/ausentes (riscos, arranhões, trincas) em 512×384: 4× mais detalhe
+  const FW=W*2,FH=H*2,FN=FW*FH,P2=await visLoad(prevSrc,FW,FH),C2=await visLoad(curSrc,FW,FH),w2=a=>visWarp(a,FW,FH,al.s,al.dx*2,al.dy*2);
+  const c2r=fix(w2(C2.r),gr),c2g=fix(w2(C2.g),gg),c2b=fix(w2(C2.b),gb),c2l=new Float32Array(FN);for(let i=0;i<FN;i++)c2l[i]=.299*c2r[i]+.587*c2g[i]+.114*c2b[i];
+  const gm2=new Float32Array(FN);for(let y=0;y<FH;y++)for(let x=0;x<FW;x++)gm2[y*FW+x]=gmap[(y>>1)*W+(x>>1)];for(let i=0;i<FN;i++)c2l[i]*=gm2[i];
+  const Pf=visBox(P2.l,FW,FH,1),Cf=visBox(c2l,FW,FH,1),G1=visGrad(Pf,FW,FH),G2=visGrad(Cf,FW,FH),G1m=visMaxF(G1,FW,FH,4),G2m=visMaxF(G2,FW,FH,4);
+  M2=new Uint8Array(FN);for(let y=0;y<FH;y++)for(let x=0;x<FW;x++)M2[y*FW+x]=M[(y>>1)*W+(x>>1)];M2=visEro(M2,FW,FH,3);
+  const Ef=new Float32Array(FN),F=new Uint8Array(FN),Ms=new Uint8Array(FN);for(let i=0;i<FN;i++){const e=Math.max(0,G2[i]-G1m[i])/(VIS.T_EDGE*lightK);Ef[i]=e;if(M2[i]&&e>=1)F[i]=1;if(M2[i]&&(G1[i]-G2m[i])/(VIS.T_EDGE*lightK)>=1)Ms[i]=1}
+  const MsD=visDil(Ms,FW,FH,6);
+  const core=new Uint8Array(FN);for(let y=1;y<FH-1;y++)for(let x=1;x<FW-1;x++){const i=y*FW+x;if(F[i]){let n=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)n+=F[i+dy*FW+dx];core[i]=n>=3?1:0}}
+  EE=core;
+  for(const c of visLabel(visDil(core,FW,FH,3),FW,FH).comps){let n=0,s=0,ms=0;for(const j of c.px){if(core[j]){n++;s+=Math.min(3,Ef[j])}if(MsD[j])ms++}
+   // bordas "novas" acompanhadas de bordas "sumidas" ao lado = desalinhamento (não é risco)
+   if(n>=VIS.MIN_EDGE&&ms<c.px.length*VIS.MISS_MAX)blobs.push({kind:'borda',core:n,eq:n/4,mean:s/n,x0:c.x0/FW,x1:(c.x1+1)/FW,y0:c.y0/FH,y1:(c.y1+1)/FH,px:c.px.map(j=>(((j/FW)|0)>>1)*W+((j%FW)>>1))})}
+ }
 
+ // com o veículo localizado: uma marca só vale se o ENTORNO dela for lataria (liso e da cor da carroceria);
+ // gavetas, bancadas, bicicletas, vidros e piso ao redor não passam
+ if(carBox&&blobs.length){const bw=carBox.x1-carBox.x0,bh=carBox.y1-carBox.y0,sm=[];
+  for(let y=Math.round(carBox.y0+bh*.4);y<Math.round(carBox.y0+bh*.85);y++)for(let x=Math.round(carBox.x0+bw*.25);x<Math.round(carBox.x0+bw*.75);x++)sm.push(y*W+x);
+  const lum=sm.map(i=>Pb[i]),medL=visMed(lum),pick=sm.filter(i=>Pb[i]>=.6*medL),cR=visMed(pick.map(i=>pr[i])),cG=visMed(pick.map(i=>pg[i])),GpS=visBox(Gp,W,H,2);
+  const paint=new Uint8Array(N);for(let i=0;i<N;i++)paint[i]=(Math.abs(Pb[i]-medL)<=.32*medL+10&&Math.hypot(pr[i]-cR,pg[i]-cG)<=.07&&GpS[i]<=VIS.T_SMOOTH)?1:0;
+  for(let k=blobs.length-1;k>=0;k--){const c=blobs[k],mk=new Uint8Array(N);for(const j of c.px)mk[j]=1;const dil=visDil(mk,W,H,7);let rn=0,rp=0;for(let i=0;i<N;i++)if(dil[i]&&!mk[i]){rn++;rp+=paint[i]}
+   c.paint=rn?rp/rn:0;if(rn<30||c.paint<VIS.MIN_PAINT)blobs.splice(k,1)}}
+ const flagged=blobs.reduce((a,c)=>a+c.eq,0),frac=mArea?flagged/mArea:0,sim=framing?null:Math.max(0,Math.round(100*(1-Math.min(1,frac*14))));
+ let status=bigChange?'bad':'warn';
+ if(!framing&&!bigChange){status='ok';const bigB=blobs.filter(c=>c.eq/mArea>.001),strong=blobs.filter(c=>c.mean>=1.15&&c.eq>=VIS.MIN_STRONG);
+  if(bigB.some(c=>c.mean>=1.15)||frac>.012||strong.length>=3)status=(lightK>1&&!blobs.some(c=>c.kind==='borda'))?'warn':'bad';else if(blobs.length)status=blobs.some(c=>c.eq>=VIS.MIN_STRONG||c.mean>=1.3)?'warn':blobs.length>=2?'warn':'ok'}
+ const cells=[],boxes=[];if(!framing&&!bigChange)for(const c of blobs){if(status==='ok')break;boxes.push({x:+c.x0.toFixed(3),y:+c.y0.toFixed(3),w:+(c.x1-c.x0).toFixed(3),h:+(c.y1-c.y0).toFixed(3),s:Math.round(c.mean*100)/100,k:c.kind});
+  const cc={};for(const j of c.px){const k=(((j/W)|0)*GY/H|0)*GX+((j%W)*GX/W|0);cc[k]=(cc[k]||0)+1}for(const [k,n] of Object.entries(cc))if(n>=3&&!cells.some(x=>x.cx===k%GX&&x.cy===(k/GX|0)))cells.push({cx:k%GX,cy:(k/GX)|0,s:Math.min(1,Math.round(c.mean*50)/100)})}
+ const regions=[...new Set(cells.slice(0,4).map(c=>REGION(c.cx,c.cy)))];
+ const text=bigChange?'A lataria mudou muito em relação à referência: possível avaria grande, peça faltando ou veículo diferente.':framing?'Não foi possível comparar a lataria: o enquadramento ou o veículo está diferente da referência (diferenças de fundo não são avarias). Refaça a foto alinhando com a imagem fantasma.'
+  :status==='ok'?'Nenhuma diferença relevante na lataria em relação à referência.'
+  :status==='warn'?`Possível risco, arranhão ou pequena marca na lataria${regions.length?' ('+regions.join(', ')+')':''}. Confirme visualmente: pode ser sujeira, reflexo ou sombra.${Math.abs(gl)>.5?' Iluminação bem diferente da referência.':''}`
+  :`Alteração na lataria${regions.length?' em '+regions.join(', '):''}: possível risco, amassado, peça faltando ou dano novo.`;
+ const out={status,sim,cells,boxes,regions,text,engine:'local-v4',framing,light:Math.round(Math.exp(gl)*100)/100,lightK,ncc:Math.round(al.ncc*100)/100,body:Math.round(body*100)/100,car:carBox?{x:+(carBox.x0/W).toFixed(3),y:+(carBox.y0/H).toFixed(3),w:+((carBox.x1-carBox.x0)/W).toFixed(3),h:+((carBox.y1-carBox.y0)/H).toFixed(3),score:+carBox.score.toFixed(2)}:null,align:{s:al.s,dx:al.dx,dy:al.dy}};
+ if(ctx.debug)out.debug={M,T:TT,E:EE,M2,W,H,blobs:blobs.map(c=>({kind:c.kind,core:c.core,eq:Math.round(c.eq),mean:Math.round(c.mean*100)/100,x0:c.x0,x1:c.x1,y0:c.y0,y1:c.y1}))};
+ return out}
+
+VIS.DETECT=!DEMO&&CONFIG.CAR_DETECTOR!==false;   // localiza o veículo na foto (detector em ml/, só no modo real)
 /* Qualidade da foto: brilho, nitidez, e checagens específicas (faróis, painel) */
 async function quality(src,k){const W=160,H=120,P=await visLoad(src,W,H),g=P.l;let m=0;for(const v of g)m+=v;m/=g.length;let s=0,n=0;
  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const l=4*g[y*W+x]-g[y*W+x-1]-g[y*W+x+1]-g[(y-1)*W+x]-g[(y+1)*W+x];s+=l*l;n++}
@@ -1012,8 +1102,8 @@ async function analyzeAngle(prevSrc,curSrc,ctx={}){
    if(r&&['ok','warn','bad'].includes(r.status))return{status:r.status,sim:r.sim??null,cells:r.cells||[],regions:r.regions||[],text:r.text||'',engine:r.engine||'edge'}}
   catch(e){console.warn('analyze-photos falhou, usando análise local',e)}}
  return analyzeAngleLocal(prevSrc,curSrc,ctx)}
-const cellsHTML=cells=>(cells||[]).map(c=>`<div class="cell" style="left:${c.cx*12.5}%;top:${c.cy*16.6667}%;background:rgba(220,38,38,${Math.min(.5,.15+(c.s||.5)/4)})"></div>`).join('');
-const iBadge=i=>({ok:'<span class="badge b-ok">Sem alterações</span>',warn:'<span class="badge b-warn">Atenção</span>',bad:'<span class="badge b-bad">Possível avaria</span>',baseline:'<span class="badge b-info">Sem referência</span>',skipped:'<span class="badge b-bad">Foto pulada</span>'}[i.status]||'')+(i.sim!=null?` <span class="small mut">${i.sim}%</span>`:'');
+const cellsHTML=(cells,boxes)=>boxes&&boxes.length?boxes.map(b=>`<div class="dbox" style="left:${(b.x*100).toFixed(2)}%;top:${(b.y*100).toFixed(2)}%;width:${(b.w*100).toFixed(2)}%;height:${(b.h*100).toFixed(2)}%"></div>`).join(''):(cells||[]).map(c=>`<div class="cell" style="left:${c.cx*12.5}%;top:${c.cy*16.6667}%;background:rgba(220,38,38,${Math.min(.5,.15+(c.s||.5)/4)})"></div>`).join('');
+const iBadge=i=>i.framing?'<span class="badge b-info">Enquadramento diferente</span>':({ok:'<span class="badge b-ok">Sem alterações</span>',warn:'<span class="badge b-warn">Atenção</span>',bad:'<span class="badge b-bad">Possível avaria</span>',baseline:'<span class="badge b-info">Sem referência</span>',skipped:'<span class="badge b-bad">Foto pulada</span>'}[i.status]||'')+(i.sim!=null?` <span class="small mut">${i.sim}%</span>`:'');
 async function fileToData(file,max=1024){const u=URL.createObjectURL(file);try{const im=await loadImg(u);const sc=Math.min(1,max/Math.max(im.width,im.height));const c=document.createElement('canvas');c.width=Math.round(im.width*sc);c.height=Math.round(im.height*sc);c.getContext('2d').drawImage(im,0,0,c.width,c.height);return c.toDataURL('image/jpeg',.72)}finally{URL.revokeObjectURL(u)}}
 
 /* ======================= câmera (lanterna, câmera nativa, aviso de pouca luz) ======================= */
@@ -1131,16 +1221,16 @@ async function vsRun(){PK.step=3;PK.analysis=null;render();window.scrollTo(0,0);
  if(!ret&&PK.fuel<=.25)al.push('Tanque em 1/4 ou menos: o gestor será avisado para abastecer.');
  const bad=CHECKS.filter(([k])=>PK.checks[k]==='issue').map(c=>c[1]);if(bad.length)al.push('Checklist com problema: '+bad.join(', ')+'.');
  const worst=Math.max(0,...items.map(i=>({warn:1,bad:2})[i.status]||0));
- PK.analysis={items,alerts:al,worst,reference:PK.ref?{id:PK.ref.id,created_at:PK.ref.created_at,kind:PK.ref.kind}:null,prevId:PK.ref?.id||null,comparison_kind:PK.ck,consumption:c,incident:PK.incident,at:nowISO(),engine:items.find(i=>i.engine)?.engine||'local-v3'};
+ PK.analysis={items,alerts:al,worst,reference:PK.ref?{id:PK.ref.id,created_at:PK.ref.created_at,kind:PK.ref.kind}:null,prevId:PK.ref?.id||null,comparison_kind:PK.ck,consumption:c,incident:PK.incident,at:nowISO(),engine:items.find(i=>i.engine)?.engine||'local-v4'};
  render()}
 function vsAnalise(){const a=PK.analysis;if(!a)return`<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔎</div><h3>Analisando as fotos...</h3><p class="mut">Comparando cada ângulo com a referência.</p></div>`;
  const fl=a.items.filter(i=>i.status==='warn'||i.status==='bad'),ret=PK.kind==='retirada';
- return`<div class="card"><h3>🤖 Resultado da comparação <span class="small mut">(${a.engine==='local-v3'?'análise local':'IA'})</span></h3>
+ return`<div class="card"><h3>🤖 Resultado da comparação <span class="small mut">(${String(a.engine||'').startsWith('local')?'análise local':'IA'})</span></h3>
  <div class="${!a.reference?'infobox':a.worst===2?'badbox':a.worst===1?'warnbox':'okbox'}"><b>${!a.reference?'Sem vistoria de referência: estas fotos passam a ser a referência do veículo.':a.worst===0?'Nenhuma avaria aparente em relação à referência.':`${fl.length} ângulo(s) com diferenças. Indique abaixo se você vê o dano.`}</b>
  ${a.reference?`<br>Referência: ${a.reference.kind==='devolucao'?'devolução':'retirada'} de ${fmtDT(a.reference.created_at)}. ${ret?'Diferenças encontradas agora ficam registradas como <b>anteriores ao seu uso</b>.':'Diferenças encontradas agora indicam dano <b>ocorrido durante este uso</b>.'}`:''}</div>
  ${a.alerts.map(t=>`<div class="warnbox">${esc(t)}</div>`).join('')}</div>
  ${a.items.map((i,idx)=>`<div class="card"><div class="row sp"><b>${esc(i.label)}</b>${iBadge(i)}</div>
- <div class="cmp" style="margin-top:8px"><div class="imgbox"><span class="tag">Referência</span>${PK.refUrls[i.k]?`<img src="${PK.refUrls[i.k]}">`:'<div class="empty">sem foto de referência</div>'}</div><div class="imgbox"><span class="tag">Agora</span>${PK.photos[i.k]?`<img src="${PK.photos[i.k]}">${cellsHTML(i.cells)}`:'<div class="empty">foto pulada</div>'}</div></div>
+ <div class="cmp" style="margin-top:8px"><div class="imgbox"><span class="tag">Referência</span>${PK.refUrls[i.k]?`<img src="${PK.refUrls[i.k]}">`:'<div class="empty">sem foto de referência</div>'}</div><div class="imgbox"><span class="tag">Agora</span>${PK.photos[i.k]?`<img src="${PK.photos[i.k]}">${cellsHTML(i.cells,i.boxes)}`:'<div class="empty">foto pulada</div>'}</div></div>
  <p class="small" style="margin:8px 0 0">${esc(i.text)}</p>
  ${i.status==='warn'||i.status==='bad'?`<div class="row" style="margin-top:6px"><span class="small mut">Você vê esse dano no veículo?</span><div class="seg"><button class="${i.opinion==='confirma'?'on is':''}" onclick="PK.analysis.items[${idx}].opinion='confirma';render()">Sim, há dano</button><button class="${i.opinion==='nao_ve'?'on ok':''}" onclick="PK.analysis.items[${idx}].opinion='nao_ve';render()">Não vejo diferença</button></div></div>`:''}</div>`).join('')}
  <button class="btn pri big" onclick="vsSave()">✔ Salvar vistoria ${ret?'e iniciar uso':'de devolução'}</button><div class="row" style="margin-top:8px"><button class="btn" onclick="PK.step=2;render()">← Voltar</button></div>`}
@@ -1163,7 +1253,7 @@ async function vsSave(){const a=PK.analysis;if(a.items.some(i=>(i.status==='warn
 async function loadInsp(id){return (await api.select('inspections',{f:[['eq','id',id]]}))[0]}
 function cmpCard(label,refPath,refTag,curPath,curTag,it){return`<div class="card" style="break-inside:avoid"><div class="row sp"><b>${esc(label)}</b>${it?iBadge(it):''}</div><div class="cmp" style="margin-top:6px">
  <div class="imgbox"><span class="tag">${esc(refTag)}</span>${refPath?`<img data-path="${esc(refPath)}">`:'<div class="empty">sem foto</div>'}</div>
- <div class="imgbox"><span class="tag">${esc(curTag)}</span>${curPath?`<img data-path="${esc(curPath)}">${cellsHTML(it?.cells)}`:'<div class="empty">foto pulada</div>'}</div></div>
+ <div class="imgbox"><span class="tag">${esc(curTag)}</span>${curPath?`<img data-path="${esc(curPath)}">${cellsHTML(it?.cells,it?.boxes)}`:'<div class="empty">foto pulada</div>'}</div></div>
  ${it?`<p class="small" style="margin:6px 0 0">${esc(it.text||'')}${it.opinion?` · condutor: ${it.opinion==='confirma'?'confirma o dano':'não vê diferença'}`:''}</p>`:''}</div>`}
 async function openInspection(id){busy(true);try{const i=await loadInsp(id);if(!i)throw new Error('Vistoria não encontrada');const refId=i.reference_inspection_id||i.prev_inspection_id;let ref=null;if(refId){try{ref=await loadInsp(refId)}catch(e){}}
  const a=i.analysis||{},bad=CHECKS.filter(([k])=>i.checks?.[k]==='issue').map(c=>c[1]),its=(a.items||[]).filter(it=>ANGLES.some(g=>g.k===it.k)||i.photos?.[it.k]);
