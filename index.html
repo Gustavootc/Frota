@@ -108,6 +108,7 @@ th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase}
 .term{border:2px solid var(--bad);background:#fff7f7;border-radius:10px;padding:12px;font-size:15px;line-height:1.45}
 .onlyprint{display:none}
 /* v4 */
+.mk{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border:3px solid #f59e0b;border-radius:50%;box-shadow:0 0 0 2px #fff;pointer-events:none}
 .dbox{position:absolute;border:2px solid #dc2626;background:rgba(220,38,38,.16);border-radius:3px;pointer-events:none}
 .chip{display:inline-block;padding:7px 12px;border:1px solid #cbd5e1;border-radius:99px;background:#fff;cursor:pointer;font-size:13px;margin:0 4px 6px 0}.chip.on{background:var(--pri2);border-color:var(--pri);color:var(--pri);font-weight:600}
 .tag2{display:inline-block;font-size:11px;padding:1px 7px;border-radius:6px;background:#e2e8f0;color:#334155;margin-right:4px}
@@ -282,14 +283,14 @@ class SupaAPI{
    notificações com deduplicação, sugestão de veículos e alertas periódicos (mesma lógica do schema.sql). */
 const E=m=>new Error(m);
 class DemoAPI{
- constructor(){this.t={profiles:[],vehicles:[],bookings:[],inspections:[],damages:[],refuels:[],maintenance:[],notifications:[],push_subscriptions:[],booking_events:[],maintenance_periods:[],companies:[],nosbeb_checklists:[],vehicle_drivers:[],fuel_requests:[]};this.files={};this.pins={};this.cur=null;this.depth=0;this.listeners=[];this.sys=false}
+ constructor(){this.t={profiles:[],vehicles:[],bookings:[],inspections:[],damages:[],refuels:[],maintenance:[],notifications:[],push_subscriptions:[],booking_events:[],maintenance_periods:[],companies:[],nosbeb_checklists:[],vehicle_drivers:[],fuel_requests:[],photo_feedback:[]};this.files={};this.pins={};this.cur=null;this.depth=0;this.listeners=[];this.sys=false}
  role(){return this.t.profiles.find(p=>p.id===this.cur&&p.active)?.role||''}
  isG(){return this.role()==='gestor'} isS(){return['gestor','recepcao'].includes(this.role())}
  visible(t,r){if(this.sys)return true;const u=this.cur,role=this.role();if(!role)return false;
   switch(t){case'profiles':return r.id===u||this.isS();case'vehicles':return this.isG();
    case'bookings':return this.isG()||r.driver_id===u||(role==='recepcao'&&(['aprovada','chave_retirada','em_uso','devolvido'].includes(r.status)||r.start_at>=new Date(Date.now()-2*864e5).toISOString()||(r.status==='solicitada'&&receptionEligible(r))));
    case'inspections':return this.isG()||r.driver_id===u||r.created_by===u;case'damages':return this.isG()||r.reported_by===u;
-   case'refuels':return this.isG();case'maintenance':case'maintenance_periods':return this.isG();case'companies':return true;case'nosbeb_checklists':return this.isG()||r.inspected_by===u;case'vehicle_drivers':return this.isS()||r.driver_id===u;case'fuel_requests':return this.isG();
+   case'refuels':return this.isG();case'maintenance':case'maintenance_periods':return this.isG();case'companies':return true;case'nosbeb_checklists':return this.isG()||r.inspected_by===u;case'vehicle_drivers':return this.isS()||r.driver_id===u;case'fuel_requests':case'photo_feedback':return this.isG();
    case'notifications':case'push_subscriptions':return r.user_id===u;
    case'booking_events':return this.isG()||this.t.bookings.some(b=>b.id===r.booking_id&&b.driver_id===u)}return true}
  async login(card,pin){const p=this.t.profiles.find(x=>x.card===normCard(card));if(!p||this.pins[p.id]!==pin)throw E('Cartão ou PIN inválido.');if(!p.active)throw E('Usuário desativado.');this.cur=p.id;return clone(p)}
@@ -298,10 +299,10 @@ class DemoAPI{
  async select(t,q={}){let r=this.t[t].filter(x=>this.visible(t,x));for(const [op,c,v] of (q.f||[]))r=r.filter(x=>op==='eq'?x[c]===v:op==='neq'?x[c]!==v:op==='gte'?x[c]!=null&&x[c]>=v:op==='lte'?x[c]!=null&&x[c]<=v:op==='lt'?x[c]!=null&&x[c]<v:op==='gt'?x[c]!=null&&x[c]>v:op==='in'?v.includes(x[c]):op==='is'?x[c]==v:true);
   if(q.order)r.sort((a,b)=>((a[q.order]??'')>(b[q.order]??'')?1:(a[q.order]??'')<(b[q.order]??'')?-1:0)*(q.desc?-1:1));if(q.limit)r=r.slice(0,q.limit);return clone(r)}
  canWrite(t,op,r){if(this.sys)return true;const role=this.role(),u=this.cur;if(!role&&!(t==='profiles'&&!this.t.profiles.length))return false;
-  switch(t){case'vehicles':case'maintenance':case'maintenance_periods':case'companies':case'vehicle_drivers':case'fuel_requests':return this.isG();case'refuels':return this.isG();case'nosbeb_checklists':return op==='I'?true:this.isG();case'profiles':return this.isG()||!this.t.profiles.length;
+  switch(t){case'vehicles':case'maintenance':case'maintenance_periods':case'companies':case'vehicle_drivers':case'fuel_requests':return this.isG();case'photo_feedback':return op==='I'?r.created_by===u:this.isG();case'refuels':return this.isG();case'nosbeb_checklists':return op==='I'?true:this.isG();case'profiles':return this.isG()||!this.t.profiles.length;
    case'bookings':return this.isS()||r.driver_id===u;case'inspections':return op==='I'?(this.isS()||r.driver_id===u):this.isG();
    case'damages':return op==='I'?r.reported_by===u:this.isG();case'notifications':return op==='U'&&r.user_id===u;case'push_subscriptions':return r.user_id===u;default:return false}}
- async insert(t,row){const D0={bookings:{status:'solicitada',flags:[],created_by:this.cur,passengers:1,vehicle_type_requested:'Indiferente',carries_cargo:false,sp_rodizio:false},inspections:{driver_id:this.cur,created_by:this.cur,photos:{},extras:[],checks:{},skipped_steps:[],complete:true},damages:{status:'pendente',source:'ia',reported_by:this.cur},refuels:{created_by:this.cur,level_after:1},maintenance:{created_by:this.cur,done_at:today()},vehicles:{company_id:null,rodizio_exempt:false,base_photos:{},base_photos_at:null,status:'disponivel',fuel_level:1,current_fuel:'gasolina',km_current:0,vehicle_type:'Hatch/compacto',seats:5,tire_pressure_interval_days:15,has_spare_tire:true,has_wheel_wrench:true,has_jack:true,has_triangle:true,has_spare_key:false,spare_key_holder:'Gestor de frota'},profiles:{active:true,role:'condutor'},push_subscriptions:{user_id:this.cur},maintenance_periods:{created_by:this.cur,started_at:nowISO()},companies:{fleet_controls:false},nosbeb_checklists:{inspected_by:this.cur,checks:{},photos:{}}};
+ async insert(t,row){const D0={bookings:{status:'solicitada',flags:[],created_by:this.cur,passengers:1,vehicle_type_requested:'Indiferente',carries_cargo:false,sp_rodizio:false},inspections:{driver_id:this.cur,created_by:this.cur,photos:{},extras:[],checks:{},skipped_steps:[],complete:true},damages:{status:'pendente',source:'ia',reported_by:this.cur},refuels:{created_by:this.cur,level_after:1},maintenance:{created_by:this.cur,done_at:today()},vehicles:{company_id:null,rodizio_exempt:false,base_photos:{},base_photos_at:null,status:'disponivel',fuel_level:1,current_fuel:'gasolina',km_current:0,vehicle_type:'Hatch/compacto',seats:5,tire_pressure_interval_days:15,has_spare_tire:true,has_wheel_wrench:true,has_jack:true,has_triangle:true,has_spare_key:false,spare_key_holder:'Gestor de frota'},profiles:{active:true,role:'condutor'},push_subscriptions:{user_id:this.cur},maintenance_periods:{created_by:this.cur,started_at:nowISO()},companies:{fleet_controls:false},nosbeb_checklists:{inspected_by:this.cur,checks:{},photos:{}},photo_feedback:{created_by:this.cur,marks:[],features:[],boxes:[],metrics:{},missed:false,framing:false}};
   const n={id:uuid(),created_at:nowISO(),...(D0[t]||{}),...clone(row)};
   if(!this.canWrite(t,'I',n))throw E('Sem permissão para esta ação.');
   if(t==='vehicles'&&this.t.vehicles.some(x=>x.plate===n.plate))throw E('Registro duplicado (placa ou cartão já cadastrado).');
@@ -887,7 +888,7 @@ VIEWS.inicio=()=>ME.role==='recepcao'?VIEWS.inicioRecep():VIEWS.inicioCond();
    5) dentro da máscara: erro fino = luz, cor e BORDAS NOVAS/AUSENTES (com tolerância de ±3 px ao alinhamento);
       agrupa em manchas e avalia tamanho e contraste. Diferenças fora da máscara (fundo, outro carro ao lado) não contam.
    Retorno padronizado: {status, sim, cells, boxes, regions, text, engine, framing, ncc, align, body}. */
-const VIS={DETECT:false,ML_BASE:'ml/',W:256,H:192,GX:8,GY:6,NCC_FRAMING:.28,MIN_BODY:.10,T_MASK:1,T_EDGE:13,MIN_EDGE:64,MIN_TONE:90,MIN_STRONG:24,MISS_MAX:.35,NCC_SAME:.7,MIN_CENTER:.5,T_SMOOTH:14,MIN_PAINT:.5,MIN_PAINT_BIG:.4,NCC_CAR:.6,MAX_ASPECT:.3,BRIGHT_L:228,MAX_BRIGHT:.15};
+const VIS={CLF:null,DETECT:false,ML_BASE:'ml/',W:256,H:192,GX:8,GY:6,NCC_FRAMING:.28,MIN_BODY:.10,T_MASK:1,T_EDGE:13,MIN_EDGE:64,MIN_TONE:90,MIN_STRONG:24,MISS_MAX:.35,NCC_SAME:.7,MIN_CENTER:.5,T_SMOOTH:14,MIN_PAINT:.5,MIN_PAINT_BIG:.4,NCC_CAR:.6,MAX_ASPECT:.3,BRIGHT_L:228,MAX_BRIGHT:.15};
 async function visLoad(src,W,H){const im=await loadImg(src);const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});
  const ar=W/H,iar=im.width/im.height;let sw=im.width,sh=im.height,sx=0,sy=0;if(iar>ar){sw=im.height*ar;sx=(im.width-sw)/2}else{sh=im.width/ar;sy=(im.height-sh)/2}
  x.drawImage(im,sx,sy,sw,sh,0,0,W,H);const d=x.getImageData(0,0,W,H).data,n=W*H,r=new Float32Array(n),g=new Float32Array(n),b=new Float32Array(n),l=new Float32Array(n);
@@ -896,7 +897,7 @@ async function visLoad(src,W,H){const im=await loadImg(src);const c=document.cre
 const visScript=src=>new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=()=>rej(new Error('falha ao carregar '+src));document.head.appendChild(s)});
 let _visML=null;const _visCars=new Map();
 function visModel(){if(!_visML)_visML=(async()=>{await visScript(VIS.ML_BASE+'tf.min.js');await visScript(VIS.ML_BASE+'coco-ssd.min.js');let ok=false;try{ok=await tf.setBackend('webgl')}catch(e){}if(!ok||tf.getBackend()!=='webgl')await tf.setBackend('cpu');await tf.ready();
-  return cocoSsd.load({base:'lite_mobilenet_v2',modelUrl:VIS.ML_BASE+'modelo/model.json'})})().catch(e=>{console.warn('detector de veículo indisponível; seguindo sem ele',e);return null});return _visML}
+  return cocoSsd.load({base:'lite_mobilenet_v2',modelUrl:VIS.ML_BASE+'modelo/model.json'})})().catch(e=>{VIS._mlFailed=true;console.warn('detector de veículo indisponível; seguindo sem ele',e);return null});return _visML}
 async function visCar(src){if(_visCars.has(src))return _visCars.get(src);const m=await visModel();let out=null;if(m){try{const im=await loadImg(src),d=(await m.detect(im,8,.15)).filter(x=>['car','truck','bus'].includes(x.class)&&x.score>=.15);
   if(d.length){d.sort((a,b)=>b.bbox[2]*b.bbox[3]*b.score-a.bbox[2]*a.bbox[3]*a.score);out={bbox:d[0].bbox,score:d[0].score}}}catch(e){console.warn('detecção falhou',e)}}
  if(_visCars.size>12)_visCars.clear();_visCars.set(src,out);return out}
@@ -950,6 +951,10 @@ function visField(Gp,Gc,W,H,bx){const FX=new Float32Array(W*H),FY=new Float32Arr
 // warp com campo de deslocamento local (fs = fator de escala do campo ao mudar de resolução)
 function visWarpF(a,W,H,s,dx,dy,F,fw,fs){const o=new Float32Array(W*H),cx=W/2,cy=H/2;for(let y=0;y<H;y++)for(let x=0;x<W;x++){const k=F?((y/fs|0)*fw+(x/fs|0)):0;let X=cx+(x-cx)*s+dx+(F?F.FX[k]*fs:0),Y=cy+(y-cy)*s+dy+(F?F.FY[k]*fs:0);X=Math.max(0,Math.min(W-1.001,X));Y=Math.max(0,Math.min(H-1.001,Y));const x0=X|0,y0=Y|0,fx=X-x0,fy=Y-y0,i=y0*W+x0;
  o[y*W+x]=a[i]*(1-fx)*(1-fy)+a[i+1]*fx*(1-fy)+a[i+W]*(1-fx)*fy+a[i+W+1]*fx*fy}return o}
+// medidas de cada marca candidata (as mesmas usadas no treino: treino/treinar.py)
+const VIS_FEATS=['borda','ln_eq','mean','paint','bright','aspect','ln_rel','ln_ring','nccCar','lightK'];
+function visFeat(c,ctx){const w=(c.x1-c.x0)*VIS.W,h=(c.y1-c.y0)*VIS.H;return[c.kind==='borda'?1:0,Math.log(1+c.eq),c.mean,c.paint,c.bright,Math.log((w+1)/(h+1)),Math.log(1+c.eq/Math.max(1,ctx.mArea)*1000),Math.log(1+(c.rn||0)),ctx.nccCar==null?0:ctx.nccCar,ctx.lightK]}
+function visClf(m,f){let z=m.b;for(let i=0;i<f.length;i++)z+=m.w[i]*(f[i]-m.mu[i])/(m.sd[i]||1);return 1/(1+Math.exp(-z))}
 const visMed=a=>{const s=[...a].sort((x,y)=>x-y);return s[s.length>>1]};
 // alinhamento em pirâmide: 32×24 (busca ampla) → 64×48 → 128×96 → 256×192 (refino)
 function visAlign(P,C){const W=P.W,H=P.H;let pl=[P.l],cl=[C.l],ws=[W],hs=[H];
@@ -1050,17 +1055,19 @@ async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
    if(n>=VIS.MIN_EDGE&&ms<c.px.length*VIS.MISS_MAX)blobs.push({kind:'borda',core:n,eq:n/4,mean:s/n,x0:c.x0/FW,x1:(c.x1+1)/FW,y0:c.y0/FH,y1:(c.y1+1)/FH,px:c.px.map(j=>(((j/FW)|0)>>1)*W+((j%FW)>>1))})}
  }
 
- // com o veículo localizado: uma marca só vale se o ENTORNO dela for lataria (liso e da cor da carroceria);
- // gavetas, bancadas, bicicletas, vidros e piso ao redor não passam
+ // com o veículo localizado: uma marca só vale se o ENTORNO dela for lataria (liso e da cor da carroceria) e não for reflexo;
+ // gavetas, bancadas, bicicletas, vidros e piso ao redor não passam. Decisão por regras ou, se houver modelo treinado (VIS.CLF), por classificador.
+ const cands=[];
  if(carBox&&blobs.length){const bw=carBox.x1-carBox.x0,bh=carBox.y1-carBox.y0,sm=[];
   for(let y=Math.round(carBox.y0+bh*.4);y<Math.round(carBox.y0+bh*.85);y++)for(let x=Math.round(carBox.x0+bw*.25);x<Math.round(carBox.x0+bw*.75);x++)sm.push(y*W+x);
   const lum=sm.map(i=>Pb[i]),medL=visMed(lum),pick=sm.filter(i=>Pb[i]>=.6*medL),cR=visMed(pick.map(i=>pr[i])),cG=visMed(pick.map(i=>pg[i])),GpS=visBox(Gp,W,H,2);
   const paint=new Uint8Array(N);for(let i=0;i<N;i++)paint[i]=(Math.abs(Pb[i]-medL)<=.32*medL+10&&Math.hypot(pr[i]-cR,pg[i]-cG)<=.07&&GpS[i]<=VIS.T_SMOOTH)?1:0;
-  for(let k=blobs.length-1;k>=0;k--){const c=blobs[k],mk=new Uint8Array(N);for(const j of c.px)mk[j]=1;const dil=visDil(mk,W,H,7);let rn=0,rp=0;for(let i=0;i<N;i++)if(dil[i]&&!mk[i]&&Pb[i]>=.5*medL){rn++;rp+=paint[i]}   // pixels escuros (grade, pneu, vidro) são neutros: não contam contra
-   c.paint=rn?rp/rn:0;
-   // reflexo de luz (faixas brilhantes no capô, vidro refletindo o céu): muita área estourada ao redor da marca = não é dano
-   let bn=0,bt=0;for(let i=0;i<N;i++)if(dil[i]){bt++;if(Cl[i]>=VIS.BRIGHT_L)bn++}c.bright=bt?bn/bt:0;
-   if(rn<30||c.paint<(c.eq>=80?VIS.MIN_PAINT_BIG:VIS.MIN_PAINT)||c.bright>VIS.MAX_BRIGHT){dropped.push({kind:c.kind,eq:Math.round(c.eq),paint:+c.paint.toFixed(2),bright:+c.bright.toFixed(2),x:+c.x0.toFixed(2),y:+c.y0.toFixed(2)});blobs.splice(k,1)}}}
+  const all=blobs.splice(0,blobs.length);
+  for(const c of all){const mk=new Uint8Array(N);for(const j of c.px)mk[j]=1;const dil=visDil(mk,W,H,7);let rn=0,rp=0,bn=0,bt=0;
+   for(let i=0;i<N;i++){if(!dil[i])continue;bt++;if(Cl[i]>=VIS.BRIGHT_L)bn++;if(!mk[i]&&Pb[i]>=.5*medL){rn++;rp+=paint[i]}}   // pixels escuros (grade, pneu, vidro) são neutros
+   c.rn=rn;c.paint=rn?rp/rn:0;c.bright=bt?bn/bt:0;c.f=visFeat(c,{mArea:boxArea,nccCar,lightK});
+   const keep=VIS.CLF?visClf(VIS.CLF,c.f)>=VIS.CLF.thr:!(rn<30||c.paint<(c.eq>=80?VIS.MIN_PAINT_BIG:VIS.MIN_PAINT)||c.bright>VIS.MAX_BRIGHT);
+   c.kept=keep;cands.push(c);if(keep)blobs.push(c);else dropped.push({kind:c.kind,eq:Math.round(c.eq),paint:+c.paint.toFixed(2),bright:+c.bright.toFixed(2),x:+c.x0.toFixed(2),y:+c.y0.toFixed(2)})}}
  const flagged=blobs.reduce((a,c)=>a+c.eq,0),frac=mArea?flagged/mArea:0,sim=framing?null:Math.max(0,Math.round(100*(1-Math.min(1,frac*14))));
  let status=bigChange?'bad':'warn';
  if(!framing&&!bigChange){status='ok';const bigB=blobs.filter(c=>c.eq/mArea>.001),strong=blobs.filter(c=>c.mean>=1.15&&c.eq>=VIS.MIN_STRONG);
@@ -1073,11 +1080,14 @@ async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
   :status==='ok'?'Nenhuma diferença relevante na lataria em relação à referência.'
   :status==='warn'?`Possível risco, arranhão ou pequena marca na lataria${regions.length?' ('+regions.join(', ')+')':''}. Confirme visualmente: pode ser sujeira, reflexo ou sombra.${Math.abs(gl)>.5?' Iluminação bem diferente da referência.':''}`
   :`Alteração na lataria${regions.length?' em '+regions.join(', '):''}: possível risco, amassado, peça faltando ou dano novo.`;
- const out={status,sim,cells,boxes,regions,text,engine:'local-v4',framing,light:Math.round(Math.exp(gl)*100)/100,lightK,ncc:Math.round(al.ncc*100)/100,nccCar:nccCar==null?null:Math.round(nccCar*100)/100,alMode,angleDiff:!!angleDiff,body:Math.round(body*100)/100,car:carBox?{x:+(carBox.x0/W).toFixed(3),y:+(carBox.y0/H).toFixed(3),w:+((carBox.x1-carBox.x0)/W).toFixed(3),h:+((carBox.y1-carBox.y0)/H).toFixed(3),score:+carBox.score.toFixed(2)}:null,align:{s:al.s,dx:al.dx,dy:al.dy}};
+ const detector=!VIS.DETECT?'desligado':VIS._mlFailed?'indisponível (pasta ml/ não carregou)':bP&&bC?'ativo':(bP||bC)?'ativo (carro achado em 1 foto)':'ativo (carro não encontrado)',
+  features=cands.slice(0,VIS.FEAT_CAP||16).map(c=>({k:c.kind,eq:Math.round(c.eq),m:+c.mean.toFixed(2),p:+c.paint.toFixed(2),br:+c.bright.toFixed(2),x:+(c.x0*1).toFixed(3),y:+(c.y0*1).toFixed(3),w:+(c.x1-c.x0).toFixed(3),h:+(c.y1-c.y0).toFixed(3),kept:!!c.kept,f:c.f.map(z=>+z.toFixed(4))}));
+ const out={detector,features,status,sim,cells,boxes,regions,text,engine:'local-v4',framing,light:Math.round(Math.exp(gl)*100)/100,lightK,ncc:Math.round(al.ncc*100)/100,nccCar:nccCar==null?null:Math.round(nccCar*100)/100,alMode,angleDiff:!!angleDiff,body:Math.round(body*100)/100,car:carBox?{x:+(carBox.x0/W).toFixed(3),y:+(carBox.y0/H).toFixed(3),w:+((carBox.x1-carBox.x0)/W).toFixed(3),h:+((carBox.y1-carBox.y0)/H).toFixed(3),score:+carBox.score.toFixed(2)}:null,align:{s:al.s,dx:al.dx,dy:al.dy}};
  if(ctx.debug)out.debug={M,T:TT,E:EE,M2,W,H,dropped,blobs:blobs.map(c=>({paint:c.paint==null?null:+c.paint.toFixed(2),bright:c.bright==null?null:+c.bright.toFixed(2),kind:c.kind,core:c.core,eq:Math.round(c.eq),mean:Math.round(c.mean*100)/100,x0:c.x0,x1:c.x1,y0:c.y0,y1:c.y1}))};
  return out}
 
-VIS.DETECT=!DEMO&&CONFIG.CAR_DETECTOR!==false;   // localiza o veículo na foto (detector em ml/, só no modo real)
+VIS.DETECT=!DEMO&&CONFIG.CAR_DETECTOR!==false;
+if(VIS.DETECT)fetch(VIS.ML_BASE+'modelo_marcas.json').then(r=>r.ok?r.json():null).then(m=>{if(m&&m.w&&m.w.length===VIS_FEATS.length)VIS.CLF=m}).catch(()=>{});   // classificador de marcas treinado com os dados da frota (opcional)   // localiza o veículo na foto (detector em ml/, só no modo real)
 /* Qualidade da foto: brilho, nitidez, e checagens específicas (faróis, painel) */
 async function quality(src,k){const W=160,H=120,P=await visLoad(src,W,H),g=P.l;let m=0;for(const v of g)m+=v;m/=g.length;let s=0,n=0;
  for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const l=4*g[y*W+x]-g[y*W+x-1]-g[y*W+x+1]-g[(y-1)*W+x]-g[(y+1)*W+x];s+=l*l;n++}
@@ -1271,19 +1281,34 @@ async function vsRun(){PK.step=3;PK.analysis=null;render();window.scrollTo(0,0);
  if(!ret&&PK.fuel<=.25)al.push('Tanque em 1/4 ou menos: o gestor será avisado para abastecer.');
  const bad=CHECKS.filter(([k])=>PK.checks[k]==='issue').map(c=>c[1]);if(bad.length)al.push('Checklist com problema: '+bad.join(', ')+'.');
  const worst=Math.max(0,...items.map(i=>({warn:1,bad:2})[i.status]||0));
- PK.analysis={items,alerts:al,worst,reference:PK.ref?{id:PK.ref.id,created_at:PK.ref.created_at,kind:PK.ref.kind}:null,prevId:PK.ref?.id||null,comparison_kind:PK.ck,consumption:c,incident:PK.incident,at:nowISO(),engine:items.find(i=>i.engine)?.engine||'local-v4'};
+ PK.analysis={items,alerts:al,worst,reference:PK.ref?{id:PK.ref.id,created_at:PK.ref.created_at,kind:PK.ref.kind}:null,prevId:PK.ref?.id||null,comparison_kind:PK.ck,consumption:c,incident:PK.incident,at:nowISO(),engine:items.find(i=>i.engine)?.engine||'local-v4',detector:items.find(i=>i.detector)?.detector};
  render()}
 function vsAnalise(){const a=PK.analysis;if(!a)return`<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔎</div><h3>Analisando as fotos...</h3><p class="mut">Comparando cada ângulo com a referência.</p></div>`;
  const fl=a.items.filter(i=>i.status==='warn'||i.status==='bad'),ret=PK.kind==='retirada';
- return`<div class="card"><h3>🤖 Resultado da comparação <span class="small mut">(${String(a.engine||'').startsWith('local')?'análise local':'IA'})</span></h3>
+ return`<div class="card"><h3>🤖 Resultado da comparação <span class="small mut">(${String(a.engine||'').startsWith('local')?'análise local':'IA'}${a.detector?` · detector de veículo: ${esc(a.detector)}`:''})</span></h3>
  <div class="${!a.reference?'infobox':a.worst===2?'badbox':a.worst===1?'warnbox':'okbox'}"><b>${!a.reference?'Sem vistoria de referência: estas fotos passam a ser a referência do veículo.':a.worst===0?'Nenhuma avaria aparente em relação à referência.':`${fl.length} ângulo(s) com diferenças. Indique abaixo se você vê o dano.`}</b>
  ${a.reference?`<br>Referência: ${a.reference.kind==='devolucao'?'devolução':'retirada'} de ${fmtDT(a.reference.created_at)}. ${ret?'Diferenças encontradas agora ficam registradas como <b>anteriores ao seu uso</b>.':'Diferenças encontradas agora indicam dano <b>ocorrido durante este uso</b>.'}`:''}</div>
  ${a.alerts.map(t=>`<div class="warnbox">${esc(t)}</div>`).join('')}</div>
  ${a.items.map((i,idx)=>`<div class="card"><div class="row sp"><b>${esc(i.label)}</b>${iBadge(i)}</div>
- <div class="cmp" style="margin-top:8px"><div class="imgbox"><span class="tag">Referência</span>${PK.refUrls[i.k]?`<img src="${PK.refUrls[i.k]}">`:'<div class="empty">sem foto de referência</div>'}</div><div class="imgbox"><span class="tag">Agora</span>${PK.photos[i.k]?`<img src="${PK.photos[i.k]}">${cellsHTML(i.cells,i.boxes)}`:'<div class="empty">foto pulada</div>'}</div></div>
+ <div class="cmp" style="margin-top:8px"><div class="imgbox"><span class="tag">Referência</span>${PK.refUrls[i.k]?`<img src="${PK.refUrls[i.k]}">`:'<div class="empty">sem foto de referência</div>'}</div><div class="imgbox"><span class="tag">Agora</span>${PK.photos[i.k]?`<div style="display:contents" ${PK.mark===idx?`onclick="vsMark(event,${idx})" class="marking"`:''}><img src="${PK.photos[i.k]}" ${PK.mark===idx?'style="cursor:crosshair" onclick="vsMark(event,'+idx+')"':''}>${cellsHTML(i.cells,i.boxes)}${(i.marks||[]).map(m=>`<span class="mk" style="left:${(m.x*100).toFixed(1)}%;top:${(m.y*100).toFixed(1)}%"></span>`).join('')}</div>`:'<div class="empty">foto pulada</div>'}</div></div>
  <p class="small" style="margin:8px 0 0">${esc(i.text)}</p>
- ${i.status==='warn'||i.status==='bad'?`<div class="row" style="margin-top:6px"><span class="small mut">Você vê esse dano no veículo?</span><div class="seg"><button class="${i.opinion==='confirma'?'on is':''}" onclick="PK.analysis.items[${idx}].opinion='confirma';render()">Sim, há dano</button><button class="${i.opinion==='nao_ve'?'on ok':''}" onclick="PK.analysis.items[${idx}].opinion='nao_ve';render()">Não vejo diferença</button></div></div>`:''}</div>`).join('')}
+ ${i.status==='warn'||i.status==='bad'?`<div class="row" style="margin-top:6px"><span class="small mut">Você vê esse dano no veículo?</span><div class="seg"><button class="${i.opinion==='confirma'?'on is':''}" onclick="PK.analysis.items[${idx}].opinion='confirma';render()">Sim, há dano</button><button class="${i.opinion==='nao_ve'?'on ok':''}" onclick="PK.analysis.items[${idx}].opinion='nao_ve';render()">Não vejo diferença</button></div></div>`:''}${fbControls(i,idx)}</div>`).join('')}
  <button class="btn pri big" onclick="vsSave()">✔ Salvar vistoria ${ret?'e iniciar uso':'de devolução'}</button><div class="row" style="margin-top:8px"><button class="btn" onclick="PK.step=2;render()">← Voltar</button></div>`}
+function fbControls(i,idx){if(!PK.photos[i.k]||!PK.analysis.reference)return'';const sem=i.status==='ok'||i.framing,mk=PK.mark===idx;
+ return`<div class="row" style="margin-top:6px">${sem?`<button class="btn sm ${i.missed?'pri':''}" onclick="vsMissed(${idx})">${i.missed?'✔ ':''}Vejo um dano que o app não apontou</button>`:''}${(i.opinion==='confirma'||i.missed)?`<button class="btn sm ${mk?'pri':''}" onclick="PK.mark=${mk?'null':idx};render()">📍 ${mk?'Toque na foto "Agora" onde está o dano; toque aqui para concluir':'Marcar onde está o dano'}</button>`:''}${isG()?`<button class="btn sm ghost" onclick="vsCase(${idx})">⬇ Baixar caso</button>`:''}</div>`}
+function vsMissed(idx){const i=PK.analysis.items[idx];i.missed=!i.missed;if(i.missed){i.opinion='confirma';PK.mark=idx}else{i.opinion=undefined;i.marks=[];if(PK.mark===idx)PK.mark=null}render()}
+function vsMark(ev,idx){if(PK.mark!==idx)return;ev.stopPropagation();const r=ev.currentTarget.getBoundingClientRect();if(!r.width)return;const i=PK.analysis.items[idx];i.marks=[...(i.marks||[]),{x:+((ev.clientX-r.left)/r.width).toFixed(3),y:+((ev.clientY-r.top)/r.height).toFixed(3)}];render()}
+// registra a resposta do usuário e as medidas da análise (SEM fotos) para melhorar o analisador; falha aqui nunca impede salvar a vistoria
+async function logFeedback(pk){try{for(const i of pk.analysis.items.filter(i=>i.opinion||i.missed||(i.marks&&i.marks.length)))
+  await api.insert('photo_feedback',{vehicle_id:pk.v.id,inspection_id:pk.id,angle:i.k,kind:pk.kind,engine:i.engine||null,detector:i.detector||null,engine_status:i.status,framing:!!i.framing,opinion:i.opinion||null,missed:!!i.missed,marks:i.marks||[],
+   metrics:{ncc:i.ncc,nccCar:i.nccCar,alMode:i.alMode,body:i.body,lightK:i.lightK,angleDiff:i.angleDiff,align:i.align,car:i.car},features:i.features||[],boxes:i.boxes||[]})}catch(e){console.warn('feedback não registrado',e)}}
+// baixa um caso (foto de referência + foto atual + resultado + marcações) em um único arquivo .json para reproduzir/treinar
+const toDataURL=async src=>{if(!src)return null;if(String(src).startsWith('data:'))return src;const b=await (await fetch(src)).blob();return new Promise(r=>{const f=new FileReader();f.onload=()=>r(f.result);f.readAsDataURL(b)})};
+async function caseDownload(refSrc,nowSrc,meta,name){busy(true,'Preparando o caso...');try{const obj={versao:1,gerado_em:nowISO(),meta,referencia:await toDataURL(refSrc),agora:await toDataURL(nowSrc)};
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(obj)],{type:'application/json'}));a.download=name;a.click()}catch(e){toast('Não foi possível baixar: '+e.message)}finally{busy(false)}}
+function vsCase(idx){const i=PK.analysis.items[idx],{cells,text,...rest}=i;caseDownload(PK.refUrls[i.k],PK.photos[i.k],{placa:PK.v.plate,angulo:i.k,tipo:PK.kind,item:rest,detector_ativo:VIS.DETECT},`caso_${PK.v.plate}_${i.k}_${Date.now()}.json`)}
+async function caseFromInsp(k){const c=window.INSP_CASE;if(!c)return;const rp=c.ref?.photos?.[k],cp=c.i.photos?.[k],it=(c.i.analysis?.items||[]).find(x=>x.k===k)||{},{cells,text,...rest}=it;
+  caseDownload(rp?await api.photoUrl(rp):null,cp?await api.photoUrl(cp):null,{placa:V(c.i.vehicle_id)?.plate,angulo:k,tipo:c.i.kind,item:rest},`caso_${V(c.i.vehicle_id)?.plate||'veiculo'}_${k}_${Date.now()}.json`)}
 async function vsSave(){const a=PK.analysis;if(a.items.some(i=>(i.status==='warn'||i.status==='bad')&&!i.opinion)&&!confirm('Há ângulos sinalizados sem sua resposta. Salvar mesmo assim?'))return;
  const complete=PK.skipped.length===0,base=`${PK.v.id}/${PK.id}`,keys=ANGLES.filter(g=>PK.photos[g.k]),tot=keys.length+PK.extras.length;let n=0;busy(true,`Enviando fotos (0/${tot})...`);
  try{const photos={};for(const g of keys){const p=`${base}/${g.k}.jpg`;await api.upload(p,await dataURLtoBlob(PK.photos[g.k]));photos[g.k]=p;busy(true,`Enviando fotos (${++n}/${tot})...`)}
@@ -1294,9 +1319,10 @@ async function vsSave(){const a=PK.analysis;if(a.items.some(i=>(i.status==='warn
    prev_inspection_id:a.reference?.id||null,reference_inspection_id:a.reference?.id||null,comparison_kind:PK.ck,complete,skipped_steps:PK.skipped,skip_ack_at:PK.ack?.at||null,skip_ack_text:PK.ack?.text||null,skip_reason:PK.ack?.reason||null});PK.saved=true}
   const common={vehicle_id:PK.v.id,inspection_id:PK.id,comparison_kind:PK.ck};
   if(!PK.dmgSaved){for(const i of a.items.filter(i=>i.status==='warn'||i.status==='bad'))await api.insert('damages',{...common,angle:i.k,description:i.text,source:'ia',severity:i.status,driver_opinion:i.opinion});
+   for(const i of a.items.filter(i=>i.missed))await api.insert('damages',{...common,angle:i.k,description:'Dano indicado pelo condutor (o app não apontou nesta foto)',source:'condutor',severity:'warn',driver_opinion:'confirma',photo_path:photos[i.k]||null});
    for(const e of extras.filter(e=>e.damage))await api.insert('damages',{...common,description:e.note+(PK.incident&&PK.notes?' · '+PK.notes:''),source:'condutor',severity:'bad',driver_opinion:'confirma',photo_path:e.path});
    if(!ret&&PK.incident&&!extras.some(e=>e.damage))await api.insert('damages',{...common,description:PK.notes||'Incidente informado na devolução',source:'condutor',severity:'bad',driver_opinion:'confirma'});PK.dmgSaved=true}
-  Object.values(PK.refUrls).forEach(u=>URL.revokeObjectURL(u));PK=null;await loadData();view='inicio';render();toast(ret?'Vistoria registrada. Boa viagem!':'Devolução registrada. Entregue a chave na recepção.',5000)}
+  await logFeedback(PK);Object.values(PK.refUrls).forEach(u=>URL.revokeObjectURL(u));PK=null;await loadData();view='inicio';render();toast(ret?'Vistoria registrada. Boa viagem!':'Devolução registrada. Entregue a chave na recepção.',5000)}
  catch(e){toast('Falha ao salvar: '+e.message+'. Verifique a internet e toque em salvar de novo.',8000)}finally{busy(false)}}
 
 /* ======================= visualização de vistorias e comparações ======================= */
@@ -1304,8 +1330,8 @@ async function loadInsp(id){return (await api.select('inspections',{f:[['eq','id
 function cmpCard(label,refPath,refTag,curPath,curTag,it){return`<div class="card" style="break-inside:avoid"><div class="row sp"><b>${esc(label)}</b>${it?iBadge(it):''}</div><div class="cmp" style="margin-top:6px">
  <div class="imgbox"><span class="tag">${esc(refTag)}</span>${refPath?`<img data-path="${esc(refPath)}">`:'<div class="empty">sem foto</div>'}</div>
  <div class="imgbox"><span class="tag">${esc(curTag)}</span>${curPath?`<img data-path="${esc(curPath)}">${cellsHTML(it?.cells,it?.boxes)}`:'<div class="empty">foto pulada</div>'}</div></div>
- ${it?`<p class="small" style="margin:6px 0 0">${esc(it.text||'')}${it.opinion?` · condutor: ${it.opinion==='confirma'?'confirma o dano':'não vê diferença'}`:''}</p>`:''}</div>`}
-async function openInspection(id){busy(true);try{const i=await loadInsp(id);if(!i)throw new Error('Vistoria não encontrada');const refId=i.reference_inspection_id||i.prev_inspection_id;let ref=null;if(refId){try{ref=await loadInsp(refId)}catch(e){}}
+ ${it?`<p class="small" style="margin:6px 0 0">${esc(it.text||'')}${it.opinion?` · condutor: ${it.opinion==='confirma'?'confirma o dano':'não vê diferença'}`:''}${it.detector?` · detector: ${esc(it.detector)}`:''}</p>${isG()&&it.k?`<button class="btn sm ghost noprint" onclick="caseFromInsp('${it.k}')">⬇ Baixar caso</button>`:''}`:''}</div>`}
+async function openInspection(id){busy(true);try{const i=await loadInsp(id);if(!i)throw new Error('Vistoria não encontrada');const refId=i.reference_inspection_id||i.prev_inspection_id;let ref=null;if(refId){try{ref=await loadInsp(refId)}catch(e){}}window.INSP_CASE={i,ref};
  const a=i.analysis||{},bad=CHECKS.filter(([k])=>i.checks?.[k]==='issue').map(c=>c[1]),its=(a.items||[]).filter(it=>ANGLES.some(g=>g.k===it.k)||i.photos?.[it.k]);
  openModal(`<div class="row sp noprint"><h3>Vistoria de ${i.kind==='retirada'?'retirada':'devolução'}</h3><div class="row"><button class="btn sm" onclick="window.print()">🖨 Imprimir / PDF</button><button class="btn sm" onclick="closeModal()">✕</button></div></div>
  <h3 class="onlyprint">Termo de vistoria (${i.kind}) · ${esc(CONFIG.EMPRESA)}</h3>
