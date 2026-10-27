@@ -1,10 +1,22 @@
-/* FrotaCheck v3 · Service Worker
+/* FrotaCheck v4 · Service Worker
    - permite instalar o app na tela inicial (PWA)
    - recebe Web Push (Edge Function send-push) e abre a tela certa ao tocar na notificação
    Os dados sempre vêm do servidor (sem cache offline de dados). */
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
-self.addEventListener('fetch', () => {});
+// único cache: o detector de veículo da análise de fotos (pasta ml/, ~6 MB), para baixar só uma vez por aparelho
+self.addEventListener('fetch', e => {
+  const u = new URL(e.request.url);
+  if (e.request.method === 'GET' && u.origin === self.location.origin && /\/ml\//.test(u.pathname)) {
+    e.respondWith(caches.open('fc-ml-v1').then(async c => {
+      const hit = await c.match(e.request);
+      if (hit) return hit;
+      const r = await fetch(e.request);
+      if (r.ok) c.put(e.request, r.clone());
+      return r;
+    }));
+  }
+});
 
 self.addEventListener('push', e => {
   let d = {};

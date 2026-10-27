@@ -887,7 +887,7 @@ VIEWS.inicio=()=>ME.role==='recepcao'?VIEWS.inicioRecep():VIEWS.inicioCond();
    5) dentro da máscara: erro fino = luz, cor e BORDAS NOVAS/AUSENTES (com tolerância de ±3 px ao alinhamento);
       agrupa em manchas e avalia tamanho e contraste. Diferenças fora da máscara (fundo, outro carro ao lado) não contam.
    Retorno padronizado: {status, sim, cells, boxes, regions, text, engine, framing, ncc, align, body}. */
-const VIS={DETECT:false,ML_BASE:'ml/',W:256,H:192,GX:8,GY:6,NCC_FRAMING:.28,MIN_BODY:.10,T_MASK:1,T_EDGE:13,MIN_EDGE:36,MIN_TONE:90,MIN_STRONG:24,MISS_MAX:.35,NCC_SAME:.7,MIN_CENTER:.5,T_SMOOTH:14,MIN_PAINT:.5};
+const VIS={DETECT:false,ML_BASE:'ml/',W:256,H:192,GX:8,GY:6,NCC_FRAMING:.28,MIN_BODY:.10,T_MASK:1,T_EDGE:13,MIN_EDGE:64,MIN_TONE:90,MIN_STRONG:24,MISS_MAX:.35,NCC_SAME:.7,MIN_CENTER:.5,T_SMOOTH:14,MIN_PAINT:.5,MIN_PAINT_BIG:.4,NCC_CAR:.6,MAX_ASPECT:.3,BRIGHT_L:228,MAX_BRIGHT:.15};
 async function visLoad(src,W,H){const im=await loadImg(src);const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});
  const ar=W/H,iar=im.width/im.height;let sw=im.width,sh=im.height,sx=0,sy=0;if(iar>ar){sw=im.height*ar;sx=(im.width-sw)/2}else{sh=im.width/ar;sy=(im.height-sh)/2}
  x.drawImage(im,sx,sy,sw,sh,0,0,W,H);const d=x.getImageData(0,0,W,H).data,n=W*H,r=new Float32Array(n),g=new Float32Array(n),b=new Float32Array(n),l=new Float32Array(n);
@@ -915,6 +915,41 @@ function visWarp(a,W,H,s,dx,dy){const o=new Float32Array(W*H),cx=W/2,cy=H/2;for(
 function visValid(W,H,s,dx,dy){const o=new Uint8Array(W*H),cx=W/2,cy=H/2;for(let y=0;y<H;y++)for(let x=0;x<W;x++){const X=cx+(x-cx)*s+dx,Y=cy+(y-cy)*s+dy;o[y*W+x]=X>=0&&Y>=0&&X<=W-1&&Y<=H-1?1:0}return o}
 function visNCC(A,B,W,H,m){let sa=0,sb=0,n=0;for(let y=m;y<H-m;y++)for(let x=m;x<W-m;x++){sa+=A[y*W+x];sb+=B[y*W+x];n++}const ma=sa/n,mb=sb/n;let num=0,da=0,db=0;
  for(let y=m;y<H-m;y++)for(let x=m;x<W-m;x++){const a=A[y*W+x]-ma,b=B[y*W+x]-mb;num+=a*b;da+=a*a;db+=b*b}return num/Math.sqrt(da*db+1e-9)}
+// correlação normalizada só dentro de uma região (retângulo do carro): o fundo não entra na conta
+function visNCCbox(A,B,W,H,bx,m){const x0=Math.max(m,Math.round(bx.x0)),x1=Math.min(W-m,Math.round(bx.x1)),y0=Math.max(m,Math.round(bx.y0)),y1=Math.min(H-m,Math.round(bx.y1));if(x1-x0<4||y1-y0<4)return -1;
+ let sa=0,sb=0,n=0;for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){sa+=A[y*W+x];sb+=B[y*W+x];n++}const ma=sa/n,mb=sb/n;let num=0,da=0,db=0;
+ for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const a=A[y*W+x]-ma,b=B[y*W+x]-mb;num+=a*b;da+=a*a;db+=b*b}return num/Math.sqrt(da*db+1e-9)}
+// retângulo do veículo (detector) -> coordenadas do quadro de análise (corte 4:3 "cover")
+function visBoxFrame(d,cr,W,H){const [bx,by,bw,bh]=d.bbox;return{x0:Math.max(0,(bx-cr.sx)/cr.sw*W),x1:Math.min(W,(bx+bw-cr.sx)/cr.sw*W),y0:Math.max(0,(by-cr.sy)/cr.sh*H),y1:Math.min(H,(by+bh-cr.sy)/cr.sh*H),score:d.score}}
+// alinhamento a partir dos retângulos do carro nas DUAS fotos (normaliza distância e posição) + refino só dentro do carro
+function visAlignBox(P,C,bP,bC){const W=P.W,H=P.H;let pl=[P.l],cl=[C.l],ws=[W],hs=[H];
+ for(let k=0;k<3;k++){pl.push(visDown(pl[k],ws[k],hs[k]));cl.push(visDown(cl[k],ws[k],hs[k]));ws.push(ws[k]>>1);hs.push(hs[k]>>1)}
+ const pw=bP.x1-bP.x0,ph=bP.y1-bP.y0,qw=bC.x1-bC.x0,qh=bC.y1-bC.y0,s0=Math.sqrt((qw/pw)*(qh/ph)),px=(bP.x0+bP.x1)/2,py=(bP.y0+bP.y1)/2,qx=(bC.x0+bC.x1)/2,qy=(bC.y0+bC.y1)/2;
+ const G=(a,w,h)=>visBox(visGrad(a,w,h),w,h,1),sc=lv=>1/(1<<lv),bl=lv=>({x0:bP.x0*sc(lv),x1:bP.x1*sc(lv),y0:bP.y0*sc(lv),y1:bP.y1*sc(lv)}),
+  ev=(lv,s,dx,dy,gp)=>visNCCbox(gp,G(visWarp(cl[lv],ws[lv],hs[lv],s,dx,dy),ws[lv],hs[lv]),ws[lv],hs[lv],bl(lv),2);
+ const dx0=s=>(qx-W/2)-(px-W/2)*s,dy0=s=>(qy-H/2)-(py-H/2)*s;
+ const g3=G(pl[3],ws[3],hs[3]);let b3={ncc:-2};
+ for(let k=-4;k<=4;k++){const s=s0*(1+k*.03),ix=dx0(s)/8,iy=dy0(s)/8;for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const v=ev(3,s,ix+dx,iy+dy,g3);if(v>b3.ncc)b3={ncc:v,s,dx:ix+dx,dy:iy+dy}}}
+ let cur=b3;const steps=[[2,[-.03,-.015,0,.015,.03],2],[1,[-.012,0,.012],1],[0,[-.006,0,.006],1]];
+ for(const [lv,ds,R] of steps){const gp=G(pl[lv],ws[lv],hs[lv]);let b={ncc:-2};for(const d of ds)for(let ddy=-R;ddy<=R;ddy++)for(let ddx=-R;ddx<=R;ddx++){const s=cur.s+d,dx=cur.dx*2+ddx,dy=cur.dy*2+ddy,v=ev(lv,s,dx,dy,gp);if(v>b.ncc)b={ncc:v,s,dx,dy}}cur=b}
+ return cur}
+// alinhamento LOCAL por blocos dentro do carro: absorve perspectiva e profundidade (farol, para-brisa e capô não estão no mesmo plano)
+function visField(Gp,Gc,W,H,bx){const FX=new Float32Array(W*H),FY=new Float32Array(W*H);if(!bx)return{FX,FY};
+ const NX=6,NY=4,R=4,bw=(bx.x1-bx.x0)/NX,bh=(bx.y1-bx.y0)/NY,ctr=[],sh=[];
+ for(let by=0;by<NY;by++){const row=[];for(let bxi=0;bxi<NX;bxi++){const x0=Math.round(bx.x0+bxi*bw),x1=Math.round(bx.x0+(bxi+1)*bw),y0=Math.round(bx.y0+by*bh),y1=Math.round(bx.y0+(by+1)*bh);
+  const ncc=(ddx,ddy)=>{let sa=0,sb=0,n=0;for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const xx=x+ddx,yy=y+ddy;if(xx<1||yy<1||xx>=W-1||yy>=H-1)continue;sa+=Gp[y*W+x];sb+=Gc[yy*W+xx];n++}if(n<50)return -2;const ma=sa/n,mb=sb/n;let nu=0,da=0,db=0;
+   for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const xx=x+ddx,yy=y+ddy;if(xx<1||yy<1||xx>=W-1||yy>=H-1)continue;const a=Gp[y*W+x]-ma,b=Gc[yy*W+xx]-mb;nu+=a*b;da+=a*a;db+=b*b}return{v:nu/Math.sqrt(da*db+1e-9),e:Math.sqrt(da/n)}};
+  const z=ncc(0,0);let best={v:z.v,dx:0,dy:0};if(z.e>3)for(let ddy=-R;ddy<=R;ddy++)for(let ddx=-R;ddx<=R;ddx++){const r=ncc(ddx,ddy);if(r!==-2&&r.v>best.v+.04&&r.v>best.v)best={v:r.v,dx:ddx,dy:ddy}}
+  row.push(best)}sh.push(row)}
+ // suaviza: cada bloco vira a mediana dele com os vizinhos (evita que um dano grande puxe o alinhamento)
+ const med=(a)=>{const s=a.slice().sort((x,y)=>x-y);return s[s.length>>1]},sm=sh.map((row,j)=>row.map((b,i)=>{const nb=[];for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){const r=sh[j+dj]?.[i+di];if(r)nb.push(r)}return{dx:med(nb.map(r=>r.dx)),dy:med(nb.map(r=>r.dy))}}));
+ for(let y=Math.max(0,Math.floor(bx.y0));y<Math.min(H,Math.ceil(bx.y1));y++)for(let x=Math.max(0,Math.floor(bx.x0));x<Math.min(W,Math.ceil(bx.x1));x++){
+  const fx=Math.max(0,Math.min(NX-1,(x-bx.x0)/bw-.5)),fy=Math.max(0,Math.min(NY-1,(y-bx.y0)/bh-.5)),i0=Math.floor(fx),j0=Math.floor(fy),i1=Math.min(NX-1,i0+1),j1=Math.min(NY-1,j0+1),tx=fx-i0,ty=fy-j0;
+  const lerp=(k)=>sm[j0][i0][k]*(1-tx)*(1-ty)+sm[j0][i1][k]*tx*(1-ty)+sm[j1][i0][k]*(1-tx)*ty+sm[j1][i1][k]*tx*ty;FX[y*W+x]=lerp('dx');FY[y*W+x]=lerp('dy')}
+ return{FX,FY}}
+// warp com campo de deslocamento local (fs = fator de escala do campo ao mudar de resolução)
+function visWarpF(a,W,H,s,dx,dy,F,fw,fs){const o=new Float32Array(W*H),cx=W/2,cy=H/2;for(let y=0;y<H;y++)for(let x=0;x<W;x++){const k=F?((y/fs|0)*fw+(x/fs|0)):0;let X=cx+(x-cx)*s+dx+(F?F.FX[k]*fs:0),Y=cy+(y-cy)*s+dy+(F?F.FY[k]*fs:0);X=Math.max(0,Math.min(W-1.001,X));Y=Math.max(0,Math.min(H-1.001,Y));const x0=X|0,y0=Y|0,fx=X-x0,fy=Y-y0,i=y0*W+x0;
+ o[y*W+x]=a[i]*(1-fx)*(1-fy)+a[i+1]*fx*(1-fy)+a[i+W]*(1-fx)*fy+a[i+W+1]*fx*fy}return o}
 const visMed=a=>{const s=[...a].sort((x,y)=>x-y);return s[s.length>>1]};
 // alinhamento em pirâmide: 32×24 (busca ampla) → 64×48 → 128×96 → 256×192 (refino)
 function visAlign(P,C){const W=P.W,H=P.H;let pl=[P.l],cl=[C.l],ws=[W],hs=[H];
@@ -944,7 +979,17 @@ function visFillHoles(m,W,H){const out=new Uint8Array(m),st=new Int32Array(W*H),
  for(let i=0;i<W*H;i++)if(!m[i]&&!seen[i])out[i]=1;return out}
 async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
  const {W,H,GX,GY}=VIS,N=W*H,P=await visLoad(prevSrc,W,H),C0=await visLoad(curSrc,W,H);
- const al=visAlign(P,C0),val=visValid(W,H,al.s,al.dx,al.dy),wr=a=>visWarp(a,W,H,al.s,al.dx,al.dy);
+ // veículo localizado nas duas fotos (detector); sem ele, segue pelo modo reserva
+ let bP=null,bC=null;
+ if(VIS.DETECT&&ctx.detect!==false){const [dP,dC]=await Promise.all([visCar(prevSrc),visCar(curSrc)]);if(dP)bP=visBoxFrame(dP,P.crop,W,H);if(dC)bC=visBoxFrame(dC,C0.crop,W,H)}
+ let al=visAlign(P,C0),alMode='global';
+ if(bP&&bC){const a2=visAlignBox(P,C0,bP,bC),gP=visBox(visGrad(visBox(P.l,W,H,1),W,H),W,H,1),gC=visBox(visGrad(visBox(visWarp(C0.l,W,H,al.s,al.dx,al.dy),W,H,1),W,H),W,H,1),q0=visNCCbox(gP,gC,W,H,bP,2);
+  if(a2.ncc>q0+.02){al=a2;alMode='carro'}}
+ const val=visValid(W,H,al.s,al.dx,al.dy);
+ // alinhamento local por blocos dentro do carro (perspectiva)
+ let FLD=null;const boxP=bP||(bC?{x0:W/2+(bC.x0-al.dx-W/2)/al.s,x1:W/2+(bC.x1-al.dx-W/2)/al.s,y0:H/2+(bC.y0-al.dy-H/2)/al.s,y1:H/2+(bC.y1-al.dy-H/2)/al.s}:null);
+ if(boxP){const PbL=visBox(visBox(P.l,W,H,1),W,H,1),CwL=visBox(visBox(visWarp(C0.l,W,H,al.s,al.dx,al.dy),W,H,1),W,H,1);FLD=visField(visGrad(PbL,W,H),visGrad(CwL,W,H),W,H,{x0:Math.max(0,boxP.x0),x1:Math.min(W,boxP.x1),y0:Math.max(0,boxP.y0),y1:Math.min(H,boxP.y1)})}
+ const wr=a=>visWarpF(a,W,H,al.s,al.dx,al.dy,FLD,W,1);
  let Cr=wr(C0.r),Cg=wr(C0.g),Cbl=wr(C0.b);
  // ganho de luz por canal: mediana do log da razão (pixels válidos e não estourados)
  const gainOf=(Pa,Ca)=>{const L=[];for(let i=0;i<N;i+=3)if(val[i]&&Pa[i]<235&&Ca[i]<235&&Pa[i]>12)L.push(Math.log((Ca[i]+8)/(Pa[i]+8)));return L.length>50?visMed(L):0};
@@ -961,12 +1006,13 @@ async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
  for(let i=0;i<N;i++){Ei[i]=Math.abs(Cb[i]*gmap[i]-Pb[i])/(24+.07*Pb[i]);Ec[i]=Pb[i]<28?0:Math.hypot(dR[i]-mR[i],dG[i]-mG[i])/.05}
  const Cbn=Cb.map((v,i)=>v*gmap[i]),Gp=visGrad(Pb,W,H),Gc=visGrad(Cbn,W,H),Gp3=visMaxF(Gp,W,H,3),Gc3=visMaxF(Gc,W,H,3),Eg=new Float32Array(N);
  for(let i=0;i<N;i++)Eg[i]=Math.max(0,Gc[i]-Gp3[i],Gp[i]-Gc3[i])/15;
- // retângulo do veículo (detector) no quadro da referência; o fundo fora dele não é avaliado
+ // retângulo do carro no quadro da referência (margem de 2%); o fundo fora dele não é avaliado
  let carBox=null;
- if(VIS.DETECT&&ctx.detect!==false){let dc=await visCar(curSrc),fromCur=true;if(!dc){dc=await visCar(prevSrc);fromCur=false}
-  if(dc){const cr=(fromCur?C0:P).crop,[bx,by,bw,bh]=dc.bbox;let x0=(bx-cr.sx)/cr.sw*W,x1=(bx+bw-cr.sx)/cr.sw*W,y0=(by-cr.sy)/cr.sh*H,y1=(by+bh-cr.sy)/cr.sh*H;
-   if(fromCur){const mp=(X,c)=>c+(X-c)/al.s;const cx=W/2,cy=H/2;x0=cx+(x0-al.dx-cx)/al.s;x1=cx+(x1-al.dx-cx)/al.s;y0=cy+(y0-al.dy-cy)/al.s;y1=cy+(y1-al.dy-cy)/al.s}
-   const mw=(x1-x0)*.02,mh=(y1-y0)*.02;carBox={x0:Math.max(0,x0+mw),x1:Math.min(W,x1-mw),y0:Math.max(0,y0+mh),y1:Math.min(H,y1-mh),score:dc.score};if(carBox.x1-carBox.x0<W*.15||carBox.y1-carBox.y0<H*.15)carBox=null}}
+ if(boxP){const x0=Math.max(0,boxP.x0),x1=Math.min(W,boxP.x1),y0=Math.max(0,boxP.y0),y1=Math.min(H,boxP.y1),mw=(x1-x0)*.02,mh=(y1-y0)*.02;
+  carBox={x0:x0+mw,x1:x1-mw,y0:y0+mh,y1:y1-mh,score:(bP||bC).score};if(carBox.x1-carBox.x0<W*.15||carBox.y1-carBox.y0<H*.15)carBox=null}
+ const nccCar=carBox?visNCCbox(Gp,Gc,W,H,carBox,2):null,
+  angleDiff=bP&&bC&&Math.abs(Math.log(((bP.x1-bP.x0)/(bP.y1-bP.y0))/((bC.x1-bC.x0)/(bC.y1-bC.y0))))>VIS.MAX_ASPECT,   // ângulos de visão muito diferentes (ex.: 3/4 × lateral)
+  poorCar=carBox!=null&&nccCar<VIS.NCC_CAR;   // mesmo com o detector: se o carro não casa, não é para comparar
  // 1) máscara da lataria: maior região contínua em que as fotos concordam (o fundo, que muda, fica de fora)
  const clamp=(a,m)=>a.map(v=>Math.min(m,v)),Em=new Float32Array(N),b1=visBox(clamp(Ei,3),W,H,5),b2=visBox(clamp(Ec,3),W,H,5),b3=visBox(clamp(Eg,3),W,H,5);
  for(let i=0;i<N;i++)Em[i]=val[i]?Math.max(b1[i]/.8,b2[i]/.8,b3[i]/.3):9;
@@ -982,15 +1028,15 @@ async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
   for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=y*W+x;if(x<carBox.x0||x>=carBox.x1||y<carBox.y0||y>=carBox.y1||Pb[i]<.5*med)M[i]=0}}
  let mArea=0;for(let i=0;i<N;i++)mArea+=M[i];const body=mArea/boxArea;
  let cin=0,cn=0;for(let y=Math.round(H*.3);y<Math.round(H*.8);y++)for(let x=Math.round(W*.25);x<Math.round(W*.75);x++){cn++;cin+=M[y*W+x]}const cov=covBox!=null?covBox:cin/cn,lost=body<(carBox?.18:VIS.MIN_BODY)||cov<VIS.MIN_CENTER;
- const bigChange=lost&&al.ncc>=VIS.NCC_SAME,framing=!bigChange&&(al.ncc<VIS.NCC_FRAMING||lost);
- const lightK=Math.abs(gl)>.3?1.5:1,blobs=[];let TT=null,EE=null,M2=null;   // luz muito diferente (dia × noite): limiares 50% mais tolerantes
+ const bigChange=lost&&al.ncc>=VIS.NCC_SAME&&!angleDiff&&!poorCar,framing=!bigChange&&(al.ncc<VIS.NCC_FRAMING||lost||angleDiff||poorCar);
+ const lightK=Math.abs(gl)>.3?1.5:1,blobs=[],dropped=[];let TT=null,EE=null,M2=null;   // luz muito diferente (dia × noite): limiares 50% mais tolerantes
  if(!framing){
   // 2a) tom/cor (amassados, repintura, peça diferente): em 256×192, só dentro da lataria
   const Es=new Float32Array(N),ei=visBox(Ei,W,H,2),ec=visBox(Ec,W,H,2);for(let i=0;i<N;i++)Es[i]=M[i]?Math.max(ei[i]/.9,ec[i]/.9):0;
   const T=new Uint8Array(N);for(let i=0;i<N;i++)T[i]=Es[i]>=lightK?1:0;TT=T;
   for(const c of visLabel(visDil(T,W,H,1),W,H).comps){let n=0,s=0;for(const j of c.px)if(T[j]){n++;s+=Math.min(3,Es[j])}if(n>=VIS.MIN_TONE)blobs.push({kind:'tom',core:n,eq:n,mean:s/n,x0:c.x0/W,x1:(c.x1+1)/W,y0:c.y0/H,y1:(c.y1+1)/H,px:c.px.map(j=>j)})}
   // 2b) bordas novas/ausentes (riscos, arranhões, trincas) em 512×384: 4× mais detalhe
-  const FW=W*2,FH=H*2,FN=FW*FH,P2=await visLoad(prevSrc,FW,FH),C2=await visLoad(curSrc,FW,FH),w2=a=>visWarp(a,FW,FH,al.s,al.dx*2,al.dy*2);
+  const FW=W*2,FH=H*2,FN=FW*FH,P2=await visLoad(prevSrc,FW,FH),C2=await visLoad(curSrc,FW,FH),w2=a=>visWarpF(a,FW,FH,al.s,al.dx*2,al.dy*2,FLD,W,2);
   const c2r=fix(w2(C2.r),gr),c2g=fix(w2(C2.g),gg),c2b=fix(w2(C2.b),gb),c2l=new Float32Array(FN);for(let i=0;i<FN;i++)c2l[i]=.299*c2r[i]+.587*c2g[i]+.114*c2b[i];
   const gm2=new Float32Array(FN);for(let y=0;y<FH;y++)for(let x=0;x<FW;x++)gm2[y*FW+x]=gmap[(y>>1)*W+(x>>1)];for(let i=0;i<FN;i++)c2l[i]*=gm2[i];
   const Pf=visBox(P2.l,FW,FH,1),Cf=visBox(c2l,FW,FH,1),G1=visGrad(Pf,FW,FH),G2=visGrad(Cf,FW,FH),G1m=visMaxF(G1,FW,FH,4),G2m=visMaxF(G2,FW,FH,4);
@@ -1010,8 +1056,11 @@ async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
   for(let y=Math.round(carBox.y0+bh*.4);y<Math.round(carBox.y0+bh*.85);y++)for(let x=Math.round(carBox.x0+bw*.25);x<Math.round(carBox.x0+bw*.75);x++)sm.push(y*W+x);
   const lum=sm.map(i=>Pb[i]),medL=visMed(lum),pick=sm.filter(i=>Pb[i]>=.6*medL),cR=visMed(pick.map(i=>pr[i])),cG=visMed(pick.map(i=>pg[i])),GpS=visBox(Gp,W,H,2);
   const paint=new Uint8Array(N);for(let i=0;i<N;i++)paint[i]=(Math.abs(Pb[i]-medL)<=.32*medL+10&&Math.hypot(pr[i]-cR,pg[i]-cG)<=.07&&GpS[i]<=VIS.T_SMOOTH)?1:0;
-  for(let k=blobs.length-1;k>=0;k--){const c=blobs[k],mk=new Uint8Array(N);for(const j of c.px)mk[j]=1;const dil=visDil(mk,W,H,7);let rn=0,rp=0;for(let i=0;i<N;i++)if(dil[i]&&!mk[i]){rn++;rp+=paint[i]}
-   c.paint=rn?rp/rn:0;if(rn<30||c.paint<VIS.MIN_PAINT)blobs.splice(k,1)}}
+  for(let k=blobs.length-1;k>=0;k--){const c=blobs[k],mk=new Uint8Array(N);for(const j of c.px)mk[j]=1;const dil=visDil(mk,W,H,7);let rn=0,rp=0;for(let i=0;i<N;i++)if(dil[i]&&!mk[i]&&Pb[i]>=.5*medL){rn++;rp+=paint[i]}   // pixels escuros (grade, pneu, vidro) são neutros: não contam contra
+   c.paint=rn?rp/rn:0;
+   // reflexo de luz (faixas brilhantes no capô, vidro refletindo o céu): muita área estourada ao redor da marca = não é dano
+   let bn=0,bt=0;for(let i=0;i<N;i++)if(dil[i]){bt++;if(Cl[i]>=VIS.BRIGHT_L)bn++}c.bright=bt?bn/bt:0;
+   if(rn<30||c.paint<(c.eq>=80?VIS.MIN_PAINT_BIG:VIS.MIN_PAINT)||c.bright>VIS.MAX_BRIGHT){dropped.push({kind:c.kind,eq:Math.round(c.eq),paint:+c.paint.toFixed(2),bright:+c.bright.toFixed(2),x:+c.x0.toFixed(2),y:+c.y0.toFixed(2)});blobs.splice(k,1)}}}
  const flagged=blobs.reduce((a,c)=>a+c.eq,0),frac=mArea?flagged/mArea:0,sim=framing?null:Math.max(0,Math.round(100*(1-Math.min(1,frac*14))));
  let status=bigChange?'bad':'warn';
  if(!framing&&!bigChange){status='ok';const bigB=blobs.filter(c=>c.eq/mArea>.001),strong=blobs.filter(c=>c.mean>=1.15&&c.eq>=VIS.MIN_STRONG);
@@ -1019,12 +1068,13 @@ async function analyzeAngleLocal(prevSrc,curSrc,ctx={}){
  const cells=[],boxes=[];if(!framing&&!bigChange)for(const c of blobs){if(status==='ok')break;boxes.push({x:+c.x0.toFixed(3),y:+c.y0.toFixed(3),w:+(c.x1-c.x0).toFixed(3),h:+(c.y1-c.y0).toFixed(3),s:Math.round(c.mean*100)/100,k:c.kind});
   const cc={};for(const j of c.px){const k=(((j/W)|0)*GY/H|0)*GX+((j%W)*GX/W|0);cc[k]=(cc[k]||0)+1}for(const [k,n] of Object.entries(cc))if(n>=3&&!cells.some(x=>x.cx===k%GX&&x.cy===(k/GX|0)))cells.push({cx:k%GX,cy:(k/GX)|0,s:Math.min(1,Math.round(c.mean*50)/100)})}
  const regions=[...new Set(cells.slice(0,4).map(c=>REGION(c.cx,c.cy)))];
- const text=bigChange?'A lataria mudou muito em relação à referência: possível avaria grande, peça faltando ou veículo diferente.':framing?'Não foi possível comparar a lataria: o enquadramento ou o veículo está diferente da referência (diferenças de fundo não são avarias). Refaça a foto alinhando com a imagem fantasma.'
+ const rat=bP&&bC?(bC.x1-bC.x0)/(bP.x1-bP.x0):null,hint=angleDiff?' O ângulo de visão está diferente da referência (ex.: 3/4 em vez de lateral).':rat&&rat<.8?' O carro está mais longe que na referência: aproxime-se.':rat&&rat>1.25?' O carro está mais perto que na referência: afaste-se.':'';
+ const text=bigChange?'A lataria mudou muito em relação à referência: possível avaria grande, peça faltando ou veículo diferente.':framing?'Não foi possível comparar a lataria: o enquadramento ou o veículo está diferente da referência (diferenças de fundo não são avarias). Refaça a foto alinhando com a imagem fantasma.'+hint
   :status==='ok'?'Nenhuma diferença relevante na lataria em relação à referência.'
   :status==='warn'?`Possível risco, arranhão ou pequena marca na lataria${regions.length?' ('+regions.join(', ')+')':''}. Confirme visualmente: pode ser sujeira, reflexo ou sombra.${Math.abs(gl)>.5?' Iluminação bem diferente da referência.':''}`
   :`Alteração na lataria${regions.length?' em '+regions.join(', '):''}: possível risco, amassado, peça faltando ou dano novo.`;
- const out={status,sim,cells,boxes,regions,text,engine:'local-v4',framing,light:Math.round(Math.exp(gl)*100)/100,lightK,ncc:Math.round(al.ncc*100)/100,body:Math.round(body*100)/100,car:carBox?{x:+(carBox.x0/W).toFixed(3),y:+(carBox.y0/H).toFixed(3),w:+((carBox.x1-carBox.x0)/W).toFixed(3),h:+((carBox.y1-carBox.y0)/H).toFixed(3),score:+carBox.score.toFixed(2)}:null,align:{s:al.s,dx:al.dx,dy:al.dy}};
- if(ctx.debug)out.debug={M,T:TT,E:EE,M2,W,H,blobs:blobs.map(c=>({kind:c.kind,core:c.core,eq:Math.round(c.eq),mean:Math.round(c.mean*100)/100,x0:c.x0,x1:c.x1,y0:c.y0,y1:c.y1}))};
+ const out={status,sim,cells,boxes,regions,text,engine:'local-v4',framing,light:Math.round(Math.exp(gl)*100)/100,lightK,ncc:Math.round(al.ncc*100)/100,nccCar:nccCar==null?null:Math.round(nccCar*100)/100,alMode,angleDiff:!!angleDiff,body:Math.round(body*100)/100,car:carBox?{x:+(carBox.x0/W).toFixed(3),y:+(carBox.y0/H).toFixed(3),w:+((carBox.x1-carBox.x0)/W).toFixed(3),h:+((carBox.y1-carBox.y0)/H).toFixed(3),score:+carBox.score.toFixed(2)}:null,align:{s:al.s,dx:al.dx,dy:al.dy}};
+ if(ctx.debug)out.debug={M,T:TT,E:EE,M2,W,H,dropped,blobs:blobs.map(c=>({paint:c.paint==null?null:+c.paint.toFixed(2),bright:c.bright==null?null:+c.bright.toFixed(2),kind:c.kind,core:c.core,eq:Math.round(c.eq),mean:Math.round(c.mean*100)/100,x0:c.x0,x1:c.x1,y0:c.y0,y1:c.y1}))};
  return out}
 
 VIS.DETECT=!DEMO&&CONFIG.CAR_DETECTOR!==false;   // localiza o veículo na foto (detector em ml/, só no modo real)

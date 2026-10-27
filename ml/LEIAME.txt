@@ -1,0 +1,5 @@
+Detector de veículo usado pela análise de fotos (roda no aparelho; nenhuma foto sai do celular/computador).
+- tf.min.js: TensorFlow.js 4.22.0 (Apache License 2.0, Google)
+- coco-ssd.min.js: @tensorflow-models/coco-ssd 2.2.3 (Apache License 2.0, Google)
+- modelo/: COCO-SSD "lite_mobilenet_v2" (Apache License 2.0), pesos quantizados para uint8 (4,5 MB; original 18 MB).
+É carregado só na primeira análise de vistoria e fica no cache do navegador. Se não carregar, a análise segue sem ele (modo reserva).
