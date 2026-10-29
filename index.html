@@ -255,6 +255,9 @@ class SupaAPI{
  async insert(t,row){const {data,error}=await this.c.from(t).insert(row).select().single();if(error)throw this.err(error);return data}
  async update(t,id,patch){const {data,error}=await this.c.from(t).update(patch).eq('id',id).select().maybeSingle();if(error)throw this.err(error);return data}
  async del(t,id){const {error}=await this.c.from(t).delete().eq('id',id);if(error)throw this.err(error)}
+ async delInspections(ids){const {data:rows}=await this.c.from('inspections').select('id,photos,extras').in('id',ids);const paths=[];(rows||[]).forEach(i=>{Object.values(i.photos||{}).forEach(p=>p&&paths.push(p));(i.extras||[]).forEach(e=>e&&e.path&&paths.push(e.path))});
+  const {data,error}=await this.c.from('inspections').delete().in('id',ids).select('id');if(error)throw this.err(error);if(!data||data.length<ids.length)throw new Error('Sem permissão para excluir (apenas o gestor) ou vistoria já removida');
+  if(paths.length){const {error:se}=await this.c.storage.from('vistorias').remove(paths);if(se)console.warn('fotos não removidas',se)}}
  async rpc(fn,args={}){const {data,error}=await this.c.rpc(fn,args);if(error)throw this.err(error);return data}
  async upload(path,blob){// idempotente: caminho determinístico por vistoria; reenvio de arquivo existente é ignorado
   for(let t=0;t<3;t++){const {error}=await this.c.storage.from('vistorias').upload(path,blob,{contentType:'image/jpeg',upsert:false});
@@ -317,6 +320,7 @@ class DemoAPI{
   this.t[t][i]=n;this.after(t,'U',n,o);return clone(n)}
  async sysUpdate(t,id,patch){this.depth++;try{const i=this.t[t].findIndex(x=>x.id===id);const o=this.t[t][i];const n={...o,...patch};if(t==='bookings')this.bookingGuard('U',n,o);this.t[t][i]=n;this.after(t,'U',n,o);return n}finally{this.depth--}}
  async del(t,id){if(!this.isG())throw E('Sem permissão');this.t[t]=this.t[t].filter(x=>x.id!==id)}
+ async delInspections(ids){if(!this.isG())throw E('Sem permissão');this.t.inspections=this.t.inspections.filter(x=>!ids.includes(x.id));this.t.damages=this.t.damages.filter(x=>!ids.includes(x.inspection_id))}
  after(t,op,n,o){if(t==='nosbeb_checklists')this.chkAfter(n);if(t==='bookings')this.bookingAfter(op,n,o);if(t==='inspections')this.inspectionAfter(n);if(t==='damages')this.notifyRole('gestor','avaria','⚠ Possível avaria: '+this.vp(n.vehicle_id),`${angL(n.angle)} · ${n.description||''} · origem: ${n.source}`,'avarias',n.id,'alta');
   if(t==='refuels'){const v=this.V(n.vehicle_id);Object.assign(v,{fuel_level:n.level_after,current_fuel:n.fuel_type,km_current:Math.max(v.km_current,n.km||0),fuel_updated_at:n.created_at});
    this.t.fuel_requests.filter(f=>f.vehicle_id===n.vehicle_id&&f.status==='pendente').forEach(f=>Object.assign(f,{status:'atendida',resolved_at:nowISO(),refuel_id:n.id}))}
@@ -1652,18 +1656,25 @@ VIEWS.veiculos=()=>{const cf=typeof VARG==='string'?VARG:'';return`<div class="r
  <div class="small mut">Óleo: ${esc(maintStatus(v,'oil').txt)} · Pneus: ${esc(maintStatus(v,'tire').txt)} · Calibragem: ${esc(tpStatus(v).txt)} · Preventiva: ${esc(maintStatus(v,'prev').txt)}<br>Licenciamento: ${fmtD(v.licenc_due)} · Seguro: ${fmtD(v.insurance_due)}</div></div>
  <div class="row"><button class="btn sm" onclick="go('hist','${v.id}')">📸 Vistorias</button><button class="btn sm" onclick="vehForm('${v.id}')">Editar</button></div></div></div>`}).join('')||'<div class="card mut">Nenhum veículo cadastrado.</div>'}`};
 /* ======================= VISTORIAS DO VEÍCULO (inclui checklists NOSBEB) ======================= */
-VIEWS.hist=()=>{const v=V(VARG);if(!v)return VIEWS.veiculos();AFTER.push(()=>loadHist(v.id));
+VIEWS.hist=()=>{const v=V(VARG);if(!v)return VIEWS.veiculos();HSEL=new Set();AFTER.push(()=>loadHist(v.id));
  return`<div class="row sp"><h2>Vistorias · ${esc(v.plate)} · ${esc(v.model)}</h2><div class="row"><button class="btn sm" onclick="go('hist','${v.id}')">↻ Atualizar</button><button class="btn sm" onclick="go('veiculos')">← Veículos</button></div></div>
- ${isFleetV(v)?'<div class="infobox" style="margin:0 0 12px">Frota NOSBEB: os checklists feitos pelos motoristas aparecem aqui junto com as vistorias.</div>':''}<div id="hList"><div class="card mut">Carregando...</div></div>`};
+ ${isFleetV(v)?'<div class="infobox" style="margin:0 0 12px">Frota NOSBEB: os checklists feitos pelos motoristas aparecem aqui junto com as vistorias.</div>':''}${isG()?'<div class="row noprint" style="margin:0 0 10px"><button class="btn sm" onclick="histAll()">☑ Selecionar todas</button><button class="btn sm bad" id="hDel" onclick="histDelete()" disabled>🗑 Excluir selecionadas (0)</button></div>':''}<div id="hList"><div class="card mut">Carregando...</div></div>`};
 async function loadHist(vid){const el=$('#hList');if(!el)return;
  try{const [ins,cks]=await Promise.all([api.select('inspections',{f:[['eq','vehicle_id',vid]],order:'created_at',desc:true,limit:60}),api.select('nosbeb_checklists',{f:[['eq','vehicle_id',vid]],order:'created_at',desc:true,limit:60})]);
   cks.forEach(k=>{if(!D.checklists.some(x=>x.id===k.id))D.checklists.push(k)});
-  const rows=[...ins.map(i=>({t:i.created_at,h:`<div class="card" style="cursor:pointer" onclick="openInspection('${i.id}')"><div class="row sp"><div><b>${i.kind==='retirada'?'📸 Retirada':'↩ Devolução'}</b> · ${fmtDT(i.created_at)} · ${esc(pName(i.driver_id))} ${i.analysis?(i.analysis.reference||i.analysis.prevId?iBadge({status:['ok','warn','bad'][i.analysis.worst||0]}):'<span class="badge b-info">Referência</span>'):''}${i.complete===false?' <span class="badge b-bad">Incompleta</span>':''}${i.analysis?.consumption?.flag?' <span class="badge b-warn">Consumo alto</span>':''}${i.analysis?.incident?' <span class="badge b-bad">Incidente</span>':''}<br><span class="small mut">${fmtKm(i.km)} · ${fuelL(Number(i.fuel_level))}${i.notes?' · '+esc(i.notes):''}</span></div>
+  const rows=[...ins.map(i=>({t:i.created_at,h:`<div class="card" style="cursor:pointer" onclick="openInspection('${i.id}')"><div class="row sp"><div>${isG()?`<input type="checkbox" class="hsel" style="width:20px;height:20px;margin-right:8px;vertical-align:middle" ${HSEL.has(i.id)?'checked':''} onclick="event.stopPropagation()" onchange="histSel('${i.id}',this.checked)">`:''}<b>${i.kind==='retirada'?'📸 Retirada':'↩ Devolução'}</b> · ${fmtDT(i.created_at)} · ${esc(pName(i.driver_id))} ${i.analysis?(i.analysis.reference||i.analysis.prevId?iBadge({status:['ok','warn','bad'][i.analysis.worst||0]}):'<span class="badge b-info">Referência</span>'):''}${i.complete===false?' <span class="badge b-bad">Incompleta</span>':''}${i.analysis?.consumption?.flag?' <span class="badge b-warn">Consumo alto</span>':''}${i.analysis?.incident?' <span class="badge b-bad">Incidente</span>':''}<br><span class="small mut">${fmtKm(i.km)} · ${fuelL(Number(i.fuel_level))}${i.notes?' · '+esc(i.notes):''}</span></div>
    <div class="thumbs">${Object.values(i.photos||{}).slice(0,5).map(p=>`<img data-path="${esc(p)}">`).join('')}</div></div></div>`})),
    ...cks.map(k=>({t:k.created_at,h:`<div class="card" style="cursor:pointer" onclick="openChecklistDetail('${k.id}')"><div class="row sp"><div><b>📋 Checklist NOSBEB</b> · ${fmtDT(k.created_at)} · ${esc(k.driver_name||pName(k.inspected_by))} <span class="badge ${CND[k.condition][0]}">${CND[k.condition][1]}</span>${k.fuel_ok===false?' <span class="badge b-warn">abastecer</span>':''}<br><span class="small mut">${fmtKm(k.km)} · período ${fmtD(k.due_date)}${Object.values(k.items||{}).filter(x=>x.status==='nao_conforme').length?' · '+Object.values(k.items).filter(x=>x.status==='nao_conforme').length+' item(ns) não conforme(s)':''}</span></div>
    <div class="thumbs">${Object.values(k.photos||{}).slice(0,4).map(p=>`<img data-path="${esc(p)}">`).join('')}</div></div></div>`}))].sort((a,b)=>a.t<b.t?1:-1);
   el.innerHTML=rows.map(r=>r.h).join('')||'<div class="card mut">Nenhuma vistoria ou checklist.</div>';hydrate()}
  catch(e){el.innerHTML=`<div class="badbox">Não foi possível carregar o histórico: ${esc(e.message)}</div>`}}
+
+/* ======================= excluir vistorias selecionadas (gestor) ======================= */
+let HSEL=new Set();
+function histUpd(){const b=$('#hDel');if(b){b.disabled=!HSEL.size;b.textContent='🗑 Excluir selecionadas ('+HSEL.size+')'}}
+function histSel(id,on){on?HSEL.add(id):HSEL.delete(id);histUpd()}
+function histAll(){const bx=[...document.querySelectorAll('.hsel')],all=bx.length>0&&bx.every(b=>b.checked);bx.forEach(b=>{b.checked=!all;b.dispatchEvent(new Event('change'))})}
+async function histDelete(){if(!isG()||!HSEL.size)return;const n=HSEL.size;if(!confirm('Excluir '+n+' vistoria(s) selecionada(s)?\n\nAs fotos e os registros de avaria ligados a elas serão apagados definitivamente. Não dá para desfazer.'))return;busy(true,'Excluindo...');try{await api.delInspections([...HSEL]);HSEL=new Set();toast(n+' vistoria(s) excluída(s).');go('hist',VARG)}catch(e){toast('Falha ao excluir: '+e.message,8000)}finally{busy(false)}}
 
 /* ======================= FOTOS BASE DO VEÍCULO ======================= */
 let VB={},CURV=null;
