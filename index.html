@@ -10,6 +10,7 @@
 <link rel="apple-touch-icon" href="icon.svg">
 <title>FrotaCheck · B. Group</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js" onerror="void 0"></script>
 <style>
 :root{--bg:#f3f5f8;--card:#fff;--ink:#16202e;--mut:#64748b;--line:#e2e8f0;--pri:#1d4ed8;--pri2:#dbeafe;--ok:#15803d;--okbg:#dcfce7;--warn:#b45309;--warnbg:#fef3c7;--bad:#b91c1c;--badbg:#fee2e2;--info:#0369a1;--infobg:#e0f2fe}
 *{box-sizing:border-box}
@@ -117,7 +118,7 @@ th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase}
 </style>
 </head>
 <body>
-<div id="demoBar" class="demo" style="display:none">MODO DEMONSTRAÇÃO · dados fictícios em memória · configure o Supabase para uso real</div>
+<div id="demoBar" class="demo" style="display:none">MODO DEMONSTRAÇÃO · NADA É SALVO: os dados são fictícios e somem ao fechar · preencha SUPABASE_URL e SUPABASE_ANON_KEY no config.js</div>
 <header><h1>🚚 FrotaCheck<small id="hsub">B. Group · gestão de frota</small></h1><button class="bell" id="bell" style="display:none" onclick="openNotifs()" aria-label="Notificações">🔔<b id="bellN" style="display:none">0</b></button><div class="me" id="meBox"></div></header>
 <nav id="nav" style="display:none"></nav>
 <main id="main"><div class="card" style="text-align:center">Carregando...</div></main>
@@ -132,13 +133,14 @@ th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase}
    (Supabase > Project Settings > API). Sem URL, o app abre em MODO DEMO.
    ===================================================================== */
 const CONFIG={
-  SUPABASE_URL:'https://ygzaosigjkxidbzbudec.supabase.co',                 // ex.: 'https://abcdefgh.supabase.co'
-  SUPABASE_ANON_KEY:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlnemFvc2lnamt4aWRiemJ1ZGVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1OTMxNzYsImV4cCI6MjEwODE2OTE3Nn0.okAmqqbco87_WDjKd4pwgGH06FkOtG7xecvx83fs8-U',            // chave "anon public" (NUNCA a service_role)
+  SUPABASE_URL:'',                 // ex.: 'https://abcdefgh.supabase.co'
+  SUPABASE_ANON_KEY:'',            // chave "anon public" (NUNCA a service_role)
   EMAIL_DOMAIN:'frota.bgroup.app', // domínio interno fictício do login por cartão
   EMPRESA:'B. Group',
   VEHICLE_TYPES:['Indiferente','Hatch/compacto','Sedã','SUV','Picape/caminhonete (caçamba)','Utilitário/van'],
   FUEL_ALERT_KM:100,               // alerta quando faltar menos que isso para 1/4 do tanque
   NIGHT_HOURS:[18,6],              // entre 18h e 6h o app sugere flash/lanterna
+  AI_COMPARE_LOCAL:false,            // com IA ativa, roda também o analisador local e guarda a comparação no feedback (mais lento)
   AI_ENGINE:'local',               // 'local' (no aparelho) | 'edge' (Supabase Edge Function analyze-photos, com fallback local)
   VAPID_PUBLIC_KEY:'',             // chave pública VAPID para Web Push (veja LEIAME.md)
   ALERTS_FALLBACK_MIN:15,          // app do gestor roda os alertas periódicos se o pg_cron não estiver ativo
@@ -147,6 +149,8 @@ const CONFIG={
   CONSUMPTION_ALERT_PCT:25,        // alerta quando o km/L do último intervalo (tanque cheio→cheio) ficar X% abaixo do rendimento cadastrado
   DIVERGENCE:{KM_PCT:25,KM_ABS:15,KM_GAP:10,TIME_MIN:60,MAX_AVG_KMH:90}  // tolerâncias da tela Divergências (ajuste conforme a operação)
 };
+// config.js (arquivo à parte, preenchido uma vez) tem prioridade sobre os valores deste arquivo
+if(window.FC_CONFIG)for(const [k,v] of Object.entries(window.FC_CONFIG))if(v!==''&&v!=null)CONFIG[k]=v;
 // tolera espaços, barra final ou caminho colado por engano (ex.: https://xxxx.supabase.co/rest/v1/) e espaços na chave
 CONFIG.SUPABASE_URL=String(CONFIG.SUPABASE_URL||'').trim().replace(/^(https?:\/\/[^\/\s]+).*$/i,'$1');CONFIG.SUPABASE_ANON_KEY=String(CONFIG.SUPABASE_ANON_KEY||'').replace(/\s+/g,'');
 const DEMO=!CONFIG.SUPABASE_URL||new URLSearchParams(location.search).has('demo');
@@ -274,9 +278,7 @@ class SupaAPI{
  unsubscribe(){if(this.ch){this.c.removeChannel(this.ch);this.ch=null}}
  async savePush(sub){const j=sub.toJSON();const row={endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth,user_agent:navigator.userAgent.slice(0,200)};
   const {error}=await this.c.from('push_subscriptions').insert(row);if(error&&error.code!=='23505')throw this.err(error)}
- async analyzeEdge(prevBlob,curBlob,ctx){const b64=b=>new Promise(r=>{const f=new FileReader();f.onload=()=>r(String(f.result).split(',')[1]);f.readAsDataURL(b)});
-  const {data,error}=await this.c.functions.invoke('analyze-photos',{body:{prev:await b64(prevBlob),cur:await b64(curBlob),angle:ctx.angle,label:ctx.label}});if(error)throw error;return data}
-}
+ async analyzeEdge(prev,cur,ctx){const {data,error}=await this.c.functions.invoke('analyze-photos',{body:{prev,cur,angle:ctx.angle,label:ctx.label}});if(error)throw error;if(data&&data.error)throw new Error(data.error);return data} }
 
 /* ======================= camada de dados: DEMO =======================
    Banco em memória que SIMULA as regras do Supabase: RLS por perfil, triggers de reserva/vistoria/avaria,
@@ -1157,10 +1159,16 @@ function demoImage(seed,label,opts={}){
  x.putImageData(d,0,0);return c.toDataURL('image/jpeg',.72)}
 
 /* ======================= análise: adaptador local / Edge Function ======================= */
+// recorte 4:3 (o mesmo que a tela e o analisador local usam), em JPEG base64 sem prefixo: as caixas da IA então coincidem com o que o usuário vê
+async function frame43(src,W=960,H=720,q=.82){const im=await loadImg(src),ar=W/H,iar=im.width/im.height;let sw=im.width,sh=im.height,sx=0,sy=0;if(iar>ar){sw=im.height*ar;sx=(im.width-sw)/2}else{sh=im.width/ar;sy=(im.height-sh)/2}
+ const c=document.createElement('canvas');c.width=W;c.height=H;c.getContext('2d').drawImage(im,sx,sy,sw,sh,0,0,W,H);return c.toDataURL('image/jpeg',q).split(',')[1]}
+const edgeToItem=r=>({status:r.status,sim:r.sim??null,cells:r.cells||[],boxes:r.boxes||[],regions:r.regions||[],text:r.text||'',framing:!!r.framing,danos:r.danos||[],model:r.model||null,engine:r.engine||'ia'});
 async function analyzeAngle(prevSrc,curSrc,ctx={}){
- if(CONFIG.AI_ENGINE==='edge'&&!DEMO){try{const r=await api.analyzeEdge(await dataURLtoBlob(prevSrc),await dataURLtoBlob(curSrc),ctx);
-   if(r&&['ok','warn','bad'].includes(r.status))return{status:r.status,sim:r.sim??null,cells:r.cells||[],regions:r.regions||[],text:r.text||'',engine:r.engine||'edge'}}
-  catch(e){console.warn('analyze-photos falhou, usando análise local',e)}}
+ if(CONFIG.AI_ENGINE==='edge'&&!DEMO){try{const [a,b]=await Promise.all([frame43(prevSrc),frame43(curSrc)]),r=await api.analyzeEdge(a,b,ctx);
+   if(r&&['ok','warn','bad'].includes(r.status)){const it=edgeToItem(r);
+    if(CONFIG.AI_COMPARE_LOCAL){try{const l=await analyzeAngleLocal(prevSrc,curSrc,ctx);it.local={status:l.status,framing:l.framing,boxes:l.boxes,detector:l.detector}}catch(e){}}   // guarda também o que o analisador local concluiu, para comparar IA × local
+    return it}}
+  catch(e){console.warn('análise por IA falhou, usando análise local',e)}}
  return analyzeAngleLocal(prevSrc,curSrc,ctx)}
 const cellsHTML=(cells,boxes)=>boxes&&boxes.length?boxes.map(b=>`<div class="dbox" style="left:${(b.x*100).toFixed(2)}%;top:${(b.y*100).toFixed(2)}%;width:${(b.w*100).toFixed(2)}%;height:${(b.h*100).toFixed(2)}%"></div>`).join(''):(cells||[]).map(c=>`<div class="cell" style="left:${c.cx*12.5}%;top:${c.cy*16.6667}%;background:rgba(220,38,38,${Math.min(.5,.15+(c.s||.5)/4)})"></div>`).join('');
 const iBadge=i=>i.framing?'<span class="badge b-info">Enquadramento diferente</span>':({ok:'<span class="badge b-ok">Sem alterações</span>',warn:'<span class="badge b-warn">Atenção</span>',bad:'<span class="badge b-bad">Possível avaria</span>',baseline:'<span class="badge b-info">Sem referência</span>',skipped:'<span class="badge b-bad">Foto pulada</span>'}[i.status]||'')+(i.sim!=null?` <span class="small mut">${i.sim}%</span>`:'');
@@ -1280,28 +1288,32 @@ async function vsRun(){PK.step=3;PK.analysis=null;render();window.scrollTo(0,0);
  const c=ret?null:consumption(v,b.km_start,b.fuel_start,km,PK.fuel);if(c?.flag)al.push(`Consumo acima do esperado: ${c.km} km rodados, esperado ~${c.expected_l} L e o marcador indica ~${c.observed_l} L.`);
  if(!ret&&PK.fuel<=.25)al.push('Tanque em 1/4 ou menos: o gestor será avisado para abastecer.');
  const bad=CHECKS.filter(([k])=>PK.checks[k]==='issue').map(c=>c[1]);if(bad.length)al.push('Checklist com problema: '+bad.join(', ')+'.');
- const worst=Math.max(0,...items.map(i=>({warn:1,bad:2})[i.status]||0));
- PK.analysis={items,alerts:al,worst,reference:PK.ref?{id:PK.ref.id,created_at:PK.ref.created_at,kind:PK.ref.kind}:null,prevId:PK.ref?.id||null,comparison_kind:PK.ck,consumption:c,incident:PK.incident,at:nowISO(),engine:items.find(i=>i.engine)?.engine||'local-v4',detector:items.find(i=>i.detector)?.detector};
+ const worst=Math.max(0,...items.filter(i=>!i.framing).map(i=>({warn:1,bad:2})[i.status]||0));
+ PK.analysis={items,alerts:al,worst,reference:PK.ref?{id:PK.ref.id,created_at:PK.ref.created_at,kind:PK.ref.kind}:null,prevId:PK.ref?.id||null,comparison_kind:PK.ck,consumption:c,incident:PK.incident,at:nowISO(),engine:items.find(i=>i.engine)?.engine||'local-v4',detector:items.find(i=>i.detector)?.detector,model:items.find(i=>i.model)?.model};
  render()}
+// ângulo que o motor não conseguiu comparar (enquadramento/ângulo diferente) NÃO é diferença nem avaria: não conta, não gera registro de dano
+const damageItems=a=>a.items.filter(i=>(i.status==='warn'||i.status==='bad')&&!i.framing),ncItems=a=>a.items.filter(i=>i.framing);
+function vsRetake(k){const idx=ANGLES.findIndex(a=>a.k===k);if(idx<0)return;PK.analysis=null;PK.step=1;PK.pi=idx;render();window.scrollTo(0,0)}
 function vsAnalise(){const a=PK.analysis;if(!a)return`<div class="card" style="text-align:center;padding:40px"><div style="font-size:40px">🔎</div><h3>Analisando as fotos...</h3><p class="mut">Comparando cada ângulo com a referência.</p></div>`;
- const fl=a.items.filter(i=>i.status==='warn'||i.status==='bad'),ret=PK.kind==='retirada';
- return`<div class="card"><h3>🤖 Resultado da comparação <span class="small mut">(${String(a.engine||'').startsWith('local')?'análise local':'IA'}${a.detector?` · detector de veículo: ${esc(a.detector)}`:''})</span></h3>
- <div class="${!a.reference?'infobox':a.worst===2?'badbox':a.worst===1?'warnbox':'okbox'}"><b>${!a.reference?'Sem vistoria de referência: estas fotos passam a ser a referência do veículo.':a.worst===0?'Nenhuma avaria aparente em relação à referência.':`${fl.length} ângulo(s) com diferenças. Indique abaixo se você vê o dano.`}</b>
+ const fl=damageItems(a),nc=ncItems(a),ret=PK.kind==='retirada';
+ return`<div class="card"><h3>🤖 Resultado da comparação <span class="small mut">(${String(a.engine||'').startsWith('local')?'análise local':'IA'+(a.model?' · '+esc(a.model):'')}${a.detector?` · detector de veículo: ${esc(a.detector)}`:''})</span></h3>
+ <div class="${!a.reference?'infobox':a.worst===2?'badbox':a.worst===1?'warnbox':nc.length?'infobox':'okbox'}"><b>${!a.reference?'Sem vistoria de referência: estas fotos passam a ser a referência do veículo.':a.worst===0?(nc.length?'Nenhuma diferença encontrada nos ângulos que puderam ser comparados.':'Nenhuma avaria aparente em relação à referência.'):`${fl.length} ângulo(s) com diferenças. Indique abaixo se você vê o dano.`}</b>
  ${a.reference?`<br>Referência: ${a.reference.kind==='devolucao'?'devolução':'retirada'} de ${fmtDT(a.reference.created_at)}. ${ret?'Diferenças encontradas agora ficam registradas como <b>anteriores ao seu uso</b>.':'Diferenças encontradas agora indicam dano <b>ocorrido durante este uso</b>.'}`:''}</div>
+ ${a.reference&&nc.length?`<div class="infobox" style="margin-top:8px">📐 <b>${nc.length} ângulo(s) sem comparação possível</b> (${nc.map(i=>esc(i.label)).join(', ')}): o enquadramento está diferente da referência. Refaça a foto alinhando com a imagem fantasma ou, se você vê um dano, use “Vejo um dano que o app não apontou”.</div>`:''}
  ${a.alerts.map(t=>`<div class="warnbox">${esc(t)}</div>`).join('')}</div>
  ${a.items.map((i,idx)=>`<div class="card"><div class="row sp"><b>${esc(i.label)}</b>${iBadge(i)}</div>
  <div class="cmp" style="margin-top:8px"><div class="imgbox"><span class="tag">Referência</span>${PK.refUrls[i.k]?`<img src="${PK.refUrls[i.k]}">`:'<div class="empty">sem foto de referência</div>'}</div><div class="imgbox"><span class="tag">Agora</span>${PK.photos[i.k]?`<div style="display:contents" ${PK.mark===idx?`onclick="vsMark(event,${idx})" class="marking"`:''}><img src="${PK.photos[i.k]}" ${PK.mark===idx?'style="cursor:crosshair" onclick="vsMark(event,'+idx+')"':''}>${cellsHTML(i.cells,i.boxes)}${(i.marks||[]).map(m=>`<span class="mk" style="left:${(m.x*100).toFixed(1)}%;top:${(m.y*100).toFixed(1)}%"></span>`).join('')}</div>`:'<div class="empty">foto pulada</div>'}</div></div>
  <p class="small" style="margin:8px 0 0">${esc(i.text)}</p>
- ${i.status==='warn'||i.status==='bad'?`<div class="row" style="margin-top:6px"><span class="small mut">Você vê esse dano no veículo?</span><div class="seg"><button class="${i.opinion==='confirma'?'on is':''}" onclick="PK.analysis.items[${idx}].opinion='confirma';render()">Sim, há dano</button><button class="${i.opinion==='nao_ve'?'on ok':''}" onclick="PK.analysis.items[${idx}].opinion='nao_ve';render()">Não vejo diferença</button></div></div>`:''}${fbControls(i,idx)}</div>`).join('')}
+ ${(i.status==='warn'||i.status==='bad')&&!i.framing?`<div class="row" style="margin-top:6px"><span class="small mut">Você vê esse dano no veículo?</span><div class="seg"><button class="${i.opinion==='confirma'?'on is':''}" onclick="PK.analysis.items[${idx}].opinion='confirma';render()">Sim, há dano</button><button class="${i.opinion==='nao_ve'?'on ok':''}" onclick="PK.analysis.items[${idx}].opinion='nao_ve';render()">Não vejo diferença</button></div></div>`:''}${fbControls(i,idx)}</div>`).join('')}
  <button class="btn pri big" onclick="vsSave()">✔ Salvar vistoria ${ret?'e iniciar uso':'de devolução'}</button><div class="row" style="margin-top:8px"><button class="btn" onclick="PK.step=2;render()">← Voltar</button></div>`}
 function fbControls(i,idx){if(!PK.photos[i.k]||!PK.analysis.reference)return'';const sem=i.status==='ok'||i.framing,mk=PK.mark===idx;
- return`<div class="row" style="margin-top:6px">${sem?`<button class="btn sm ${i.missed?'pri':''}" onclick="vsMissed(${idx})">${i.missed?'✔ ':''}Vejo um dano que o app não apontou</button>`:''}${(i.opinion==='confirma'||i.missed)?`<button class="btn sm ${mk?'pri':''}" onclick="PK.mark=${mk?'null':idx};render()">📍 ${mk?'Toque na foto "Agora" onde está o dano; toque aqui para concluir':'Marcar onde está o dano'}</button>`:''}${isG()?`<button class="btn sm ghost" onclick="vsCase(${idx})">⬇ Baixar caso</button>`:''}</div>`}
+ return`<div class="row" style="margin-top:6px">${i.framing?`<button class="btn sm pri" onclick="vsRetake('${i.k}')">↺ Refazer esta foto</button>`:''}${sem?`<button class="btn sm ${i.missed?'pri':''}" onclick="vsMissed(${idx})">${i.missed?'✔ ':''}Vejo um dano que o app não apontou</button>`:''}${(i.opinion==='confirma'||i.missed)?`<button class="btn sm ${mk?'pri':''}" onclick="PK.mark=${mk?'null':idx};render()">📍 ${mk?'Toque na foto "Agora" onde está o dano; toque aqui para concluir':'Marcar onde está o dano'}</button>`:''}${isG()?`<button class="btn sm ghost" onclick="vsCase(${idx})">⬇ Baixar caso</button>`:''}</div>`}
 function vsMissed(idx){const i=PK.analysis.items[idx];i.missed=!i.missed;if(i.missed){i.opinion='confirma';PK.mark=idx}else{i.opinion=undefined;i.marks=[];if(PK.mark===idx)PK.mark=null}render()}
 function vsMark(ev,idx){if(PK.mark!==idx)return;ev.stopPropagation();const r=ev.currentTarget.getBoundingClientRect();if(!r.width)return;const i=PK.analysis.items[idx];i.marks=[...(i.marks||[]),{x:+((ev.clientX-r.left)/r.width).toFixed(3),y:+((ev.clientY-r.top)/r.height).toFixed(3)}];render()}
 // registra a resposta do usuário e as medidas da análise (SEM fotos) para melhorar o analisador; falha aqui nunca impede salvar a vistoria
 async function logFeedback(pk){try{for(const i of pk.analysis.items.filter(i=>i.opinion||i.missed||(i.marks&&i.marks.length)))
   await api.insert('photo_feedback',{vehicle_id:pk.v.id,inspection_id:pk.id,angle:i.k,kind:pk.kind,engine:i.engine||null,detector:i.detector||null,engine_status:i.status,framing:!!i.framing,opinion:i.opinion||null,missed:!!i.missed,marks:i.marks||[],
-   metrics:{ncc:i.ncc,nccCar:i.nccCar,alMode:i.alMode,body:i.body,lightK:i.lightK,angleDiff:i.angleDiff,align:i.align,car:i.car},features:i.features||[],boxes:i.boxes||[]})}catch(e){console.warn('feedback não registrado',e)}}
+   metrics:{ncc:i.ncc,nccCar:i.nccCar,alMode:i.alMode,body:i.body,lightK:i.lightK,angleDiff:i.angleDiff,align:i.align,car:i.car,model:i.model,local:i.local,danosIA:i.danos},features:i.features||[],boxes:i.boxes||[]})}catch(e){console.warn('feedback não registrado',e)}}
 // baixa um caso (foto de referência + foto atual + resultado + marcações) em um único arquivo .json para reproduzir/treinar
 const toDataURL=async src=>{if(!src)return null;if(String(src).startsWith('data:'))return src;const b=await (await fetch(src)).blob();return new Promise(r=>{const f=new FileReader();f.onload=()=>r(f.result);f.readAsDataURL(b)})};
 async function caseDownload(refSrc,nowSrc,meta,name){busy(true,'Preparando o caso...');try{const obj={versao:1,gerado_em:nowISO(),meta,referencia:await toDataURL(refSrc),agora:await toDataURL(nowSrc)};
@@ -1309,7 +1321,7 @@ async function caseDownload(refSrc,nowSrc,meta,name){busy(true,'Preparando o cas
 function vsCase(idx){const i=PK.analysis.items[idx],{cells,text,...rest}=i;caseDownload(PK.refUrls[i.k],PK.photos[i.k],{placa:PK.v.plate,angulo:i.k,tipo:PK.kind,item:rest,detector_ativo:VIS.DETECT},`caso_${PK.v.plate}_${i.k}_${Date.now()}.json`)}
 async function caseFromInsp(k){const c=window.INSP_CASE;if(!c)return;const rp=c.ref?.photos?.[k],cp=c.i.photos?.[k],it=(c.i.analysis?.items||[]).find(x=>x.k===k)||{},{cells,text,...rest}=it;
   caseDownload(rp?await api.photoUrl(rp):null,cp?await api.photoUrl(cp):null,{placa:V(c.i.vehicle_id)?.plate,angulo:k,tipo:c.i.kind,item:rest},`caso_${V(c.i.vehicle_id)?.plate||'veiculo'}_${k}_${Date.now()}.json`)}
-async function vsSave(){const a=PK.analysis;if(a.items.some(i=>(i.status==='warn'||i.status==='bad')&&!i.opinion)&&!confirm('Há ângulos sinalizados sem sua resposta. Salvar mesmo assim?'))return;
+async function vsSave(){const a=PK.analysis;if(damageItems(a).some(i=>!i.opinion)&&!confirm('Há ângulos sinalizados sem sua resposta. Salvar mesmo assim?'))return;
  const complete=PK.skipped.length===0,base=`${PK.v.id}/${PK.id}`,keys=ANGLES.filter(g=>PK.photos[g.k]),tot=keys.length+PK.extras.length;let n=0;busy(true,`Enviando fotos (0/${tot})...`);
  try{const photos={};for(const g of keys){const p=`${base}/${g.k}.jpg`;await api.upload(p,await dataURLtoBlob(PK.photos[g.k]));photos[g.k]=p;busy(true,`Enviando fotos (${++n}/${tot})...`)}
   const extras=[];for(const e of PK.extras){const p=`${base}/extra_${e.id}.jpg`;await api.upload(p,await dataURLtoBlob(e.img));extras.push({path:p,note:e.note,damage:e.damage});busy(true,`Enviando fotos (${++n}/${tot})...`)}
@@ -1318,7 +1330,7 @@ async function vsSave(){const a=PK.analysis;if(a.items.some(i=>(i.status==='warn
   if(!PK.saved){await api.insert('inspections',{id:PK.id,booking_id:PK.b.id,vehicle_id:PK.v.id,driver_id:PK.b.driver_id,kind:PK.kind,km:Number(PK.km),fuel_level:PK.fuel,photos,extras,checks:PK.checks,notes,analysis:a,
    prev_inspection_id:a.reference?.id||null,reference_inspection_id:a.reference?.id||null,comparison_kind:PK.ck,complete,skipped_steps:PK.skipped,skip_ack_at:PK.ack?.at||null,skip_ack_text:PK.ack?.text||null,skip_reason:PK.ack?.reason||null});PK.saved=true}
   const common={vehicle_id:PK.v.id,inspection_id:PK.id,comparison_kind:PK.ck};
-  if(!PK.dmgSaved){for(const i of a.items.filter(i=>i.status==='warn'||i.status==='bad'))await api.insert('damages',{...common,angle:i.k,description:i.text,source:'ia',severity:i.status,driver_opinion:i.opinion});
+  if(!PK.dmgSaved){for(const i of damageItems(a))await api.insert('damages',{...common,angle:i.k,description:i.text,source:'ia',severity:i.status,driver_opinion:i.opinion});
    for(const i of a.items.filter(i=>i.missed))await api.insert('damages',{...common,angle:i.k,description:'Dano indicado pelo condutor (o app não apontou nesta foto)',source:'condutor',severity:'warn',driver_opinion:'confirma',photo_path:photos[i.k]||null});
    for(const e of extras.filter(e=>e.damage))await api.insert('damages',{...common,description:e.note+(PK.incident&&PK.notes?' · '+PK.notes:''),source:'condutor',severity:'bad',driver_opinion:'confirma',photo_path:e.path});
    if(!ret&&PK.incident&&!extras.some(e=>e.damage))await api.insert('damages',{...common,description:PK.notes||'Incidente informado na devolução',source:'condutor',severity:'bad',driver_opinion:'confirma'});PK.dmgSaved=true}
@@ -1734,10 +1746,10 @@ async function seedDemo(){const A=api,H=36e5,N=Date.now(),iso=t=>new Date(t).toI
   if(km1==null)return b;const d1=uuid();
   if(skipDev){await A.insert('inspections',{id:d1,booking_id:b.id,vehicle_id:v.id,driver_id:drv,kind:'devolucao',km:km1,fuel_level:f1,complete:false,skipped_steps:['dados',...ANGLES.map(a=>'foto:'+a.k),'checklist'],skip_ack_at:iso(rt),skip_ack_text:SKIP_TEXT,skip_reason:'Reunião da diretoria, sem tempo hábil',analysis:{items:[],alerts:[],worst:0,consumption:consumption(v,km0,f0,km1,f1)},created_at:iso(rt)})}
   else{const ph2=await photos(v,d1,dmgDev);let items=okItems({id:r1});if(compute){items=[];for(const a of ANGLES){const pr=await A.photoBlob(ph1[a.k]),cu=await A.photoBlob(ph2[a.k]);const u1=URL.createObjectURL(pr),u2=URL.createObjectURL(cu);items.push({k:a.k,label:a.l,...await analyzeAngleLocal(u1,u2),opinion:dmgDev[a.k]?'nao_ve':null})}}
-   const worst=Math.max(0,...items.map(i=>({warn:1,bad:2})[i.status]||0)),refR={id:r1,created_at:iso(st),kind:'retirada'};
+   const worst=Math.max(0,...items.filter(i=>!i.framing).map(i=>({warn:1,bad:2})[i.status]||0)),refR={id:r1,created_at:iso(st),kind:'retirada'};
    await A.insert('inspections',{id:d1,booking_id:b.id,vehicle_id:v.id,driver_id:drv,kind:'devolucao',km:km1,fuel_level:f1,photos:ph2,checks:allOk,notes:'Estacionado: pátio',reference_inspection_id:r1,prev_inspection_id:r1,comparison_kind:'devolucao_vs_retirada',analysis:{items,alerts:[],worst,reference:refR,prevId:r1,consumption:consumption(v,km0,f0,km1,f1),incident:false,engine:'local-v3'},created_at:iso(rt)});
    lastRef[v.id]={id:d1,created_at:iso(rt),kind:'devolucao'};
-   for(const i of items.filter(i=>i.status==='warn'||i.status==='bad'))await A.insert('damages',{vehicle_id:v.id,inspection_id:d1,angle:i.k,description:i.text,source:'ia',severity:i.status,driver_opinion:i.opinion,comparison_kind:'devolucao_vs_retirada',reported_by:drv})}
+   for(const i of items.filter(i=>(i.status==='warn'||i.status==='bad')&&!i.framing))await A.insert('damages',{vehicle_id:v.id,inspection_id:d1,angle:i.k,description:i.text,source:'ia',severity:i.status,driver_opinion:i.opinion,comparison_kind:'devolucao_vs_retirada',reported_by:drv})}
   A.cur=U['2000'];await A.update('bookings',b.id,{status:'concluido',key_in_at:iso(rt+5*6e4),key_in_by:U['2000']});return b};
  await pastUse({v:v1,drv:U['3002'],s:N-27*H,e:N-23*H,st:N-27*H,rt:N-23.5*H,km0:41100,km1:41250,f0:.75,f1:.5,dest:'Cliente Campinas',purpose:'Visita técnica',estKm:90});
  await pastUse({v:v4,drv:U['3002'],s:N-50*H,e:N-46*H,st:N-50*H,rt:N-46.5*H,km0:30100,km1:30260,f0:1,f1:.75,dest:'Fornecedor Jundiaí',purpose:'Reunião',skipDev:true});
