@@ -1160,15 +1160,15 @@ function demoImage(seed,label,opts={}){
 
 /* ======================= análise: adaptador local / Edge Function ======================= */
 // recorte 4:3 (o mesmo que a tela e o analisador local usam), em JPEG base64 sem prefixo: as caixas da IA então coincidem com o que o usuário vê
-async function frame43(src,W=960,H=720,q=.82){const im=await loadImg(src),ar=W/H,iar=im.width/im.height;let sw=im.width,sh=im.height,sx=0,sy=0;if(iar>ar){sw=im.height*ar;sx=(im.width-sw)/2}else{sh=im.width/ar;sy=(im.height-sh)/2}
+async function frame43(src,W=800,H=600,q=.8){const im=await loadImg(src),ar=W/H,iar=im.width/im.height;let sw=im.width,sh=im.height,sx=0,sy=0;if(iar>ar){sw=im.height*ar;sx=(im.width-sw)/2}else{sh=im.width/ar;sy=(im.height-sh)/2}
  const c=document.createElement('canvas');c.width=W;c.height=H;c.getContext('2d').drawImage(im,sx,sy,sw,sh,0,0,W,H);return c.toDataURL('image/jpeg',q).split(',')[1]}
 const edgeToItem=r=>({status:r.status,sim:r.sim??null,cells:r.cells||[],boxes:r.boxes||[],regions:r.regions||[],text:r.text||'',framing:!!r.framing,danos:r.danos||[],model:r.model||null,engine:r.engine||'ia'});
 async function analyzeAngle(prevSrc,curSrc,ctx={}){
- if(CONFIG.AI_ENGINE==='edge'&&!DEMO){try{const [a,b]=await Promise.all([frame43(prevSrc),frame43(curSrc)]),r=await api.analyzeEdge(a,b,ctx);
+ if(CONFIG.AI_ENGINE==='edge'&&!DEMO&&ctx.angle!=='painel'){try{const [a,b]=await Promise.all([frame43(prevSrc),frame43(curSrc)]),r=await api.analyzeEdge(a,b,ctx);
    if(r&&['ok','warn','bad'].includes(r.status)){const it=edgeToItem(r);
     if(CONFIG.AI_COMPARE_LOCAL){try{const l=await analyzeAngleLocal(prevSrc,curSrc,ctx);it.local={status:l.status,framing:l.framing,boxes:l.boxes,detector:l.detector}}catch(e){}}   // guarda também o que o analisador local concluiu, para comparar IA × local
     return it}}
-  catch(e){console.warn('análise por IA falhou, usando análise local',e)}}
+  catch(e){console.warn('análise por IA falhou',e);throw e}}
  return analyzeAngleLocal(prevSrc,curSrc,ctx)}
 const cellsHTML=(cells,boxes)=>boxes&&boxes.length?boxes.map(b=>`<div class="dbox" style="left:${(b.x*100).toFixed(2)}%;top:${(b.y*100).toFixed(2)}%;width:${(b.w*100).toFixed(2)}%;height:${(b.h*100).toFixed(2)}%"></div>`).join(''):(cells||[]).map(c=>`<div class="cell" style="left:${c.cx*12.5}%;top:${c.cy*16.6667}%;background:rgba(220,38,38,${Math.min(.5,.15+(c.s||.5)/4)})"></div>`).join('');
 const iBadge=i=>i.framing?'<span class="badge b-info">Enquadramento diferente</span>':({ok:'<span class="badge b-ok">Sem alterações</span>',warn:'<span class="badge b-warn">Atenção</span>',bad:'<span class="badge b-bad">Possível avaria</span>',baseline:'<span class="badge b-info">Sem referência</span>',skipped:'<span class="badge b-bad">Foto pulada</span>'}[i.status]||'')+(i.sim!=null?` <span class="small mut">${i.sim}%</span>`:'');
@@ -1278,10 +1278,10 @@ function addExtra(){const note=prompt('Descreva o que está na foto (ex.: risco 
  const damage=PK.kind==='devolucao'&&PK.incident?true:confirm('Isso é uma avaria/dano no veículo?\n\nOK = sim, é um dano · Cancelar = apenas observação');
  capture(src=>{PK.extras.push({id:uuid(),img:src,note:note||'Detalhe',damage});render()},{title:'Foto de detalhe',text:'Aproxime-se ~40 cm e mantenha a área nítida.'})}
 async function vsRun(){PK.step=3;PK.analysis=null;render();window.scrollTo(0,0);await new Promise(r=>setTimeout(r,250));
- const items=[];for(const a of ANGLES){const cur=PK.photos[a.k],pv=PK.refUrls[a.k];
-  if(!cur){items.push({k:a.k,label:a.l,status:'skipped',text:'Foto não registrada (etapa pulada com termo de responsabilidade).'});continue}
-  if(!pv){items.push({k:a.k,label:a.l,status:'baseline',text:PK.ref?'Sem foto deste ângulo na referência: esta passa a ser a referência.':'Sem vistoria de referência para comparar: esta foto passa a ser a referência.'});continue}
-  try{const r=await analyzeAngle(pv,cur,{angle:a.k,label:a.l});items.push({k:a.k,label:a.l,...r,opinion:null})}catch(e){items.push({k:a.k,label:a.l,status:'warn',text:'Não foi possível comparar automaticamente: confira visualmente.',opinion:null})}}
+ const items=ANGLES.map(a=>({k:a.k,label:a.l}));await Promise.all(ANGLES.map(async(a,i)=>{const cur=PK.photos[a.k],pv=PK.refUrls[a.k],o=items[i];
+  if(!cur){Object.assign(o,{status:'skipped',text:'Foto não registrada (etapa pulada com termo de responsabilidade).'});return}
+  if(!pv){Object.assign(o,{status:'baseline',text:PK.ref?'Sem foto deste ângulo na referência: esta passa a ser a referência.':'Sem vistoria de referência para comparar: esta foto passa a ser a referência.'});return}
+  try{const r=await analyzeAngle(pv,cur,{angle:a.k,label:a.l});Object.assign(o,r,{opinion:null})}catch(e){Object.assign(o,{status:'warn',text:'Não foi possível comparar automaticamente: confira visualmente.',opinion:null})}}));
  const al=[],v=PK.v,b=PK.b,km=Number(PK.km),ret=PK.kind==='retirada';
  if(ret){if(km<v.km_current)al.push(`KM informado (${km}) é menor que o último registro (${v.km_current}).`);if(km-v.km_current>5)al.push(`Hodômetro ${km-v.km_current} km acima do último registro: o veículo pode ter rodado sem registro no app.`);
   if(PK.fuel<Number(v.fuel_level)-.2)al.push(`Combustível (${fuelL(PK.fuel)}) abaixo do registrado na última devolução (${fuelL(Number(v.fuel_level))}).`)}
