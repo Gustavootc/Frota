@@ -1834,7 +1834,7 @@ async function bkRun(kind){if(!isG())return toast('Só o gestor pode gerar o bac
   msg.textContent=`PDF gerado: ${M.tot.bk} reservas, ${M.tot.ins} vistorias e ${M.tot.ck} checklists em ${doc.internal.getNumberOfPages()} páginas.`}
  catch(e){msg.textContent='Falha ao gerar: '+e.message;toast('Falha ao gerar: '+e.message)}finally{busy(false)}}
 const bkCard=()=>`<div class="card"><h3>Backup do app</h3><div class="small mut">PDF completo por <b>Empresa › Veículo › Motorista</b>, com reservas, vistorias e checklists NOSBEB, em resumo mensal e semanal (sem fotos). O JSON guarda todos os registros do banco para restauração.</div>
- <div class="row" style="margin-top:10px;gap:14px;align-items:flex-end"><label class="row" style="gap:6px;margin:0"><input type="checkbox" id="bkAll" checked onchange="bkToggle()"> Todo o histórico</label>
+ <div class="row" style="margin-top:10px;gap:14px;align-items:flex-end"><label style="display:flex;align-items:center;gap:6px;margin:0;font-size:14px"><input type="checkbox" id="bkAll" style="width:auto;margin:0" checked onchange="bkToggle()"> Todo o histórico</label>
  <div id="bkRange" class="row" style="display:none;gap:10px"><div><label style="margin-top:0">De</label><input type="date" id="bkF"></div><div><label style="margin-top:0">Até</label><input type="date" id="bkT" value="${today()}"></div></div></div>
  <div class="row" style="margin-top:10px"><button class="btn pri" onclick="bkRun('pdf')">📄 Gerar PDF</button><button class="btn" onclick="bkRun('json')">💾 Baixar backup JSON</button></div><div id="bkMsg" class="small mut" style="margin-top:6px"></div></div>`;
 
