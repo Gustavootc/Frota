@@ -279,6 +279,7 @@ class SupaAPI{
  async bootstrap(p,pin){const {data,error}=await this.c.auth.signUp({email:this.email(p.card),password:this.pw(p.card,pin)});if(error)throw this.err(error);
   if(!data.session)throw new Error('Desative "Confirm email" no Supabase (Authentication > Providers > Email) e tente de novo.');
   await this.insert('profiles',{...p,id:data.user.id,role:'gestor'});return this.me()}
+ async delNotifications(ids){if(!ids.length)return;const {data,error}=await this.c.from('notifications').delete().in('id',ids).select('id');if(error)throw this.err(error);if((data||[]).length<ids.length)throw new Error('Sem permissão para excluir notificações (falta rodar a migração no Supabase).')}
  async markRead(ids){if(!ids.length)return;const {error}=await this.c.from('notifications').update({read_at:nowISO()}).in('id',ids);if(error)throw this.err(error)}
  subscribeNotifs(uid,cb){this.unsubscribe();this.ch=this.c.channel('fc-notif-'+uid).on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+uid},p=>cb(p.new)).subscribe()}
  unsubscribe(){if(this.ch){this.c.removeChannel(this.ch);this.ch=null}}
@@ -472,6 +473,7 @@ class DemoAPI{
  async changeMyPin(card,pin){this.pins[this.cur]=pin}
  async bootstrapNeeded(){return false}
  async bootstrap(){}
+ async delNotifications(ids){this.t.notifications=this.t.notifications.filter(n=>!(ids.includes(n.id)&&n.user_id===this.cur))}
  async markRead(ids){ids.forEach(id=>{const n=this.t.notifications.find(x=>x.id===id&&x.user_id===this.cur);if(n)n.read_at=nowISO()})}
  subscribeNotifs(uid,cb){this.listeners=[{uid,cb}]}
  unsubscribe(){this.listeners=[]}
@@ -619,9 +621,11 @@ function onNotif(n){if(D.notifications.some(x=>x.id===n.id))return;D.notificatio
  if(document.hidden&&'Notification' in window&&Notification.permission==='granted'){navigator.serviceWorker?.getRegistration().then(r=>r?r.showNotification(n.title,{body:n.body||'',tag:n.id,data:{link:n.link}}):new Notification(n.title,{body:n.body||''})).catch(()=>{})}
  clearTimeout(onNotif.t);onNotif.t=setTimeout(()=>{if(!PK&&!$('#modal').classList.contains('on'))refresh();else loadData().catch(()=>{})},800)}
 function openNotifs(){const L=D.notifications;
- openModal(`<div class="row sp"><h3>Notificações</h3><div class="row"><button class="btn sm" onclick="readAll()">Marcar todas como lidas</button><button class="btn sm" onclick="closeModal()">✕</button></div></div>
- ${L.map(n=>`<div class="nt ${n.read_at?'':'unread'} ${n.priority}" onclick="openNotif('${n.id}')"><div class="row sp"><b>${n.read_at?'':'● '}${esc(n.title)}</b><span class="small mut">${fmtDT(n.created_at)}</span></div>${n.body?`<div class="small">${esc(n.body)}</div>`:''}</div>`).join('')||'<p class="mut">Nenhuma notificação.</p>'}`)}
+ openModal(`<div class="row sp"><h3>Notificações</h3><div class="row"><button class="btn sm" onclick="readAll()">Marcar todas como lidas</button>${L.length?'<button class="btn sm" onclick="delNotifs()">🗑 Excluir todas</button>':''}<button class="btn sm" onclick="closeModal()">✕</button></div></div>
+ ${L.map(n=>`<div class="nt ${n.read_at?'':'unread'} ${n.priority}" onclick="openNotif('${n.id}')"><div class="row sp"><b>${n.read_at?'':'● '}${esc(n.title)}</b><span class="row"><span class="small mut">${fmtDT(n.created_at)}</span><button class="btn sm" title="Excluir" onclick="event.stopPropagation();delNotifs('${n.id}')">🗑</button></span></div>${n.body?`<div class="small">${esc(n.body)}</div>`:''}</div>`).join('')||'<p class="mut">Nenhuma notificação.</p>'}`)}
 async function openNotif(id){const n=D.notifications.find(x=>x.id===id);if(!n)return;if(!n.read_at){n.read_at=nowISO();updateBell();api.markRead([id]).catch(()=>{})}closeModal();navigate(n.link)}
+async function delNotifs(id){const ids=id?[id]:D.notifications.map(n=>n.id);if(!ids.length)return;if(!id&&!confirm('Excluir todas as '+ids.length+' notificações? Não dá para desfazer.'))return;
+ try{await api.delNotifications(ids);D.notifications=D.notifications.filter(n=>!ids.includes(n.id));updateBell();openNotifs()}catch(e){toast(e.message||'Falha ao excluir')}}
 async function readAll(){const ids=D.notifications.filter(n=>!n.read_at).map(n=>n.id);D.notifications.forEach(n=>n.read_at=n.read_at||nowISO());updateBell();try{await api.markRead(ids)}catch(e){toast(e.message)}openNotifs()}
 function navigate(link){if(!link)return;if(link.startsWith('reserva:'))return openBookingAny(link.slice(8));if(VIEWS[link])go(link)}
 function b64ToU8(s){const p='='.repeat((4-s.length%4)%4),b=atob((s+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from([...b].map(c=>c.charCodeAt(0)))}
