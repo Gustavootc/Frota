@@ -1713,7 +1713,7 @@ VIEWS.usuarios=()=>{const q=(VARG||'').toLowerCase(),L=D.profiles.filter(u=>!q||
 
 /* ======================= RELATÓRIOS ======================= */
 VIEWS.relatorios=()=>{const r=VARG||{from:today().slice(0,8)+'01',to:today()};AFTER.push(()=>loadReport(r));
- return`<h2>Relatórios</h2><div class="card row"><div><label style="margin-top:0">De</label><input type="date" id="rF" value="${r.from}"></div><div><label style="margin-top:0">Até</label><input type="date" id="rT" value="${r.to}"></div><button class="btn pri" style="align-self:flex-end" onclick="go('relatorios',{from:$('#rF').value,to:$('#rT').value})">Atualizar</button></div><div id="repOut"><div class="card mut">Carregando...</div></div>`};
+ return`<h2>Relatórios</h2>${bkCard()}<div class="card row"><div><label style="margin-top:0">De</label><input type="date" id="rF" value="${r.from}"></div><div><label style="margin-top:0">Até</label><input type="date" id="rT" value="${r.to}"></div><button class="btn pri" style="align-self:flex-end" onclick="go('relatorios',{from:$('#rF').value,to:$('#rT').value})">Atualizar</button></div><div id="repOut"><div class="card mut">Carregando...</div></div>`};
 let REP=null;
 async function loadReport(r){try{const f=new Date(r.from+'T00:00:00').toISOString(),t=new Date(r.to+'T23:59:59').toISOString();
  const [bk,rf,mt,dm,ins]=await Promise.all([api.select('bookings',{f:[['gte','start_at',f],['lte','start_at',t]],order:'start_at'}),api.select('refuels',{f:[['gte','created_at',f],['lte','created_at',t]]}),api.select('maintenance',{f:[['gte','done_at',r.from],['lte','done_at',r.to]]}),api.select('damages',{f:[['gte','created_at',f],['lte','created_at',t]]}),api.select('inspections',{f:[['gte','created_at',f],['lte','created_at',t]]})]);
@@ -1731,6 +1731,112 @@ async function loadReport(r){try{const f=new Date(r.from+'T00:00:00').toISOStrin
 function csvUsos(){const rows=[['Veículo','Condutor','Destino','Finalidade','Pessoas','Tipo pedido','Carga','Início previsto','Fim previsto','Retirada','Devolução','KM inicial','KM final','KM rodados','Comb. inicial','Comb. final','Status','Vistoria incompleta','Observações']];
  REP.bk.forEach(b=>rows.push([V(b.vehicle_id)?.plate,pName(b.driver_id),b.destination,b.purpose,b.passengers,b.vehicle_type_requested,b.carries_cargo?(b.cargo_description||'sim'):'não',fmtDT(b.start_at),fmtDT(b.end_at),fmtDT(b.started_at),fmtDT(b.returned_at),b.km_start,b.km_end,b.km_end!=null&&b.km_start!=null?b.km_end-b.km_start:'',fuelL(b.fuel_start),fuelL(b.fuel_end),BST[b.status]?.[0],(b.flags||[]).includes('vistoria_incompleta')?'sim':'não',b.return_notes]));
  const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c??'').replace(/"/g,'""')}"`).join(';')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='usos-frota.csv';a.click()}
+
+/* ======================= BACKUP / RELATÓRIO COMPLETO (PDF + JSON) · só gestor ======================= */
+const BK_TABLES=['companies','profiles','vehicles','vehicle_drivers','bookings','booking_events','inspections','damages','refuels','maintenance','maintenance_periods','fuel_requests','nosbeb_checklists'];
+const BK_MES=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+// lê a tabela inteira, de 1000 em 1000 (limite do Supabase por consulta); col+from/to filtram por data
+async function bkAll(t,col,from,to){
+ if(!api.c)return api.select(t,{f:[...(from&&col?[['gte',col,from]]:[]),...(to&&col?[['lte',col,to]]:[])]});
+ const out=[];for(let o=0;;o+=1000){let q=api.c.from(t).select('*').order('id',{ascending:true}).range(o,o+999);if(col&&from)q=q.gte(col,from);if(col&&to)q=q.lte(col,to);
+  const {data,error}=await q;if(error)throw api.err(error);out.push(...data);if(data.length<1000)break}
+ return out}
+const bkTxt=x=>String(x??'').replace(/[–—]/g,'-').replace(/[“”]/g,'"').replace(/[‘’]/g,"'").replace(/\s+/g,' ').replace(/[^\x20-\x7E -ÿ]/g,'').trim();
+const bkDT=i=>i?bkTxt(new Date(i).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}).replace(',','')):'-';
+function bkWeek(iso){const ymd=localDate(new Date(iso)),dt=new Date(ymd+'T12:00:00'),dow=(dt.getDay()+6)%7,mon=addDays(ymd,-dow),sun=addDays(mon,6);
+ const th=new Date(addDays(mon,3)+'T12:00:00'),j1=new Date(th.getFullYear()+'-01-04T12:00:00'),wn=1+Math.round(((th-j1)/864e5-3+((j1.getDay()+6)%7))/7);
+ return{key:mon,lab:`S${String(wn).padStart(2,'0')}/${th.getFullYear()} (${mon.slice(8)}/${mon.slice(5,7)} a ${sun.slice(8)}/${sun.slice(5,7)})`}}
+const bkMonth=iso=>{const y=localDate(new Date(iso));return{key:y.slice(0,7),lab:BK_MES[Number(y.slice(5,7))-1]+'/'+y.slice(0,4)}};
+// agrega eventos {t,type:'bk'|'ins'|'ck',used,km,dmg} por mês ou semana
+function bkSumm(evs,mode){const m=new Map();for(const e of evs){const p=mode==='m'?bkMonth(e.t):bkWeek(e.t);const o=m.get(p.key)||{key:p.key,lab:p.lab,res:0,uso:0,km:0,vis:0,chk:0,dmg:0};
+  if(e.type==='bk'){o.res++;if(e.used)o.uso++;o.km+=e.km||0}else if(e.type==='ins'){o.vis++;o.dmg+=e.dmg||0}else o.chk++;m.set(p.key,o)}
+ return[...m.values()].sort((a,b)=>a.key<b.key?-1:1)}
+function bkBuild(R){
+ const pf=Object.fromEntries(R.profiles.map(p=>[p.id,p])),cf=Object.fromEntries(R.companies.map(c=>[c.id,c])),dmgBy={};
+ R.damages.forEach(d=>{if(d.inspection_id)(dmgBy[d.inspection_id]=dmgBy[d.inspection_id]||[]).push(d)});
+ const by={};const slot=v=>by[v]=by[v]||{bk:[],ins:[],ck:[]};
+ R.bookings.forEach(b=>slot(b.vehicle_id).bk.push(b));R.inspections.forEach(i=>slot(i.vehicle_id).ins.push(i));R.nosbeb_checklists.forEach(k=>slot(k.vehicle_id).ck.push(k));
+ const evOf=(s)=>[...s.bk.map(b=>({t:b.start_at,type:'bk',used:['em_uso','devolvido','concluido'].includes(b.status),km:b.km_end!=null&&b.km_start!=null?Math.max(0,b.km_end-b.km_start):0})),
+  ...s.ins.map(i=>({t:i.created_at,type:'ins',dmg:(dmgBy[i.id]||[]).length})),...s.ck.map(k=>({t:k.created_at,type:'ck'}))];
+ const comps=new Map();const cOf=v=>{const id=v.company_id&&cf[v.company_id]?v.company_id:'_none';if(!comps.has(id))comps.set(id,{id,name:id==='_none'?'Sem empresa':cf[id].name,vehicles:[]});return comps.get(id)};
+ for(const v of R.vehicles){const s=by[v.id]||{bk:[],ins:[],ck:[]};const dr=new Map();
+  const dk=(id)=>{const k=id||'_none';if(!dr.has(k))dr.set(k,{id:k,name:id?(pf[id]?.name||'(usuário removido)'):'(sem motorista)',card:id?pf[id]?.card||'':'',bk:[],ins:[],ck:[]});return dr.get(k)};
+  s.bk.forEach(b=>dk(b.driver_id).bk.push(b));s.ins.forEach(i=>dk(i.driver_id).ins.push(i));s.ck.forEach(k=>dk(k.inspected_by).ck.push(k));
+  const drivers=[...dr.values()].sort((a,b)=>a.name.localeCompare(b.name,'pt-BR')).map(d=>({...d,bk:d.bk.sort((a,b)=>a.start_at<b.start_at?-1:1),ins:d.ins.sort((a,b)=>a.created_at<b.created_at?-1:1),ck:d.ck.sort((a,b)=>a.created_at<b.created_at?-1:1),
+   months:bkSumm(evOf(d),'m')}));
+  cOf(v).vehicles.push({v,n:{bk:s.bk.length,ins:s.ins.length,ck:s.ck.length},months:bkSumm(evOf(s),'m'),weeks:bkSumm(evOf(s),'w'),drivers,dmgBy})}
+ const list=[...comps.values()].sort((a,b)=>a.id==='_none'?1:b.id==='_none'?-1:a.name.localeCompare(b.name,'pt-BR'));list.forEach(c=>c.vehicles.sort((a,b)=>a.v.plate.localeCompare(b.v.plate)));
+ const tot={bk:R.bookings.length,ins:R.inspections.length,ck:R.nosbeb_checklists.length,veic:R.vehicles.length,emp:list.length};
+ return{companies:list,tot}}
+let _bkLib=null;const bkLib=()=>_bkLib||(_bkLib=(async()=>{
+ if(!window.jspdf)await visScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+ if(!window.jspdf.jsPDF.API.autoTable)await visScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js')})().catch(e=>{_bkLib=null;throw e}));
+const bkAnalysis=i=>{const a=i.analysis;if(!a)return'-';if(!a.reference&&!a.prevId)return'Referência';return['Sem danos','Atenção','Dano'][a.worst||0]};
+const bkNC=k=>Object.entries(k.items||{}).filter(([,x])=>x&&x.status==='nao_conforme').map(([c])=>(NITEMS.find(n=>n[0]===c)||[c,c])[1]);
+async function bkPdf(M,meta){await bkLib();const {jsPDF}=window.jspdf;const doc=new jsPDF({orientation:'landscape',unit:'pt',format:'a4',compress:true});
+ const PW=doc.internal.pageSize.getWidth(),PH=doc.internal.pageSize.getHeight(),MX=28;let y=0;
+ const NAVY=[23,37,84],GREY=[90,98,110];
+ const ensure=h=>{if(y+h>PH-36){doc.addPage();y=40}};
+ const H=(t,sz,col)=>{ensure(sz+14);doc.setFont('helvetica','bold');doc.setFontSize(sz);doc.setTextColor(...(col||NAVY));doc.text(bkTxt(t),MX,y+sz);y+=sz+8};
+ const P=(t,sz=9,col=GREY)=>{doc.setFont('helvetica','normal');doc.setFontSize(sz);doc.setTextColor(...col);const L=doc.splitTextToSize(bkTxt(t),PW-2*MX);ensure(L.length*(sz+3));doc.text(L,MX,y+sz);y+=L.length*(sz+3)+2};
+ const T=(head,body,o={})=>{if(!body.length)return;doc.autoTable({head:[head],body:body.map(r=>r.map(bkTxt)),startY:y,margin:{left:MX,right:MX,top:40,bottom:36},theme:'grid',
+   styles:{font:'helvetica',fontSize:7.5,cellPadding:2.5,overflow:'linebreak',lineColor:[210,214,222],lineWidth:.4,textColor:[30,35,45]},headStyles:{fillColor:o.fill||NAVY,textColor:255,fontStyle:'bold'},alternateRowStyles:{fillColor:[246,248,252]},columnStyles:o.cols||{}});y=doc.lastAutoTable.finalY+10};
+ // capa
+ doc.setFillColor(...NAVY);doc.rect(0,0,PW,110,'F');doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(26);doc.text('FrotaCheck',MX,52);doc.setFontSize(14);doc.setFont('helvetica','normal');doc.text('Relatório completo da frota (backup em PDF)',MX,76);
+ doc.setFontSize(10);doc.text(bkTxt('B. Group'),MX,96);y=140;
+ P(`Período: ${meta.periodo}`,11,[30,35,45]);P(`Gerado em ${bkDT(new Date().toISOString())} por ${meta.por}`,10);y+=6;
+ T(['Empresas','Veículos','Reservas','Vistorias','Checklists NOSBEB'],[[M.tot.emp,M.tot.veic,M.tot.bk,M.tot.ins,M.tot.ck].map(String)]);
+ P('Organização: Empresa > Veículo > Motorista. Para cada veículo há o resumo mensal e semanal (semana de segunda a domingo); para cada motorista, o detalhe de reservas, vistorias e checklists. Este PDF não contém fotos: as imagens ficam guardadas no app.',9);
+ y+=6;H('Índice',13);
+ for(const c of M.companies){const t=c.vehicles.map(x=>x.v.plate).join(', ');P(`${c.name}: ${c.vehicles.length} veículo(s)${t?' - '+t:''}`,9,[30,35,45])}
+ const SUMH=['Período','Reservas','Usos','KM rodados','Vistorias','Avarias (vist.)','Checklists'];const SUMC={0:{cellWidth:230}};
+ const sumRow=r=>[r.lab,r.res,r.uso,r.km?r.km.toLocaleString('pt-BR'):'0',r.vis,r.dmg,r.chk];
+ for(const c of M.companies){doc.addPage();y=40;doc.setFillColor(...NAVY);doc.rect(0,0,PW,6,'F');H('EMPRESA: '+c.name,18);
+  c.vehicles.forEach((x,vi)=>{if(vi>0){doc.addPage();y=40}
+   const v=x.v;H(`${c.name}  >  ${v.plate} - ${v.model||''}${v.year?' ('+v.year+')':''}`,13,[30,64,175]);
+   P(`Status: ${v.status||'-'} | KM atual: ${v.km_current!=null?Number(v.km_current).toLocaleString('pt-BR'):'-'} | Reservas: ${x.n.bk} | Vistorias: ${x.n.ins} | Checklists: ${x.n.ck}`,9);
+   if(!x.n.bk&&!x.n.ins&&!x.n.ck){P('Nenhum registro no período.',9);return}
+   H('Resumo mensal do veículo',10.5);T(SUMH,x.months.map(sumRow),{cols:SUMC});
+   H('Resumo semanal do veículo',10.5);T(SUMH,x.weeks.map(sumRow),{cols:SUMC});
+   for(const d of x.drivers){ensure(90);H(`Motorista: ${d.name}${d.card?' (cartão '+d.card+')':''}`,11.5);
+    P(`Reservas: ${d.bk.length} | Vistorias: ${d.ins.length} | Checklists: ${d.ck.length}`,8.5);
+    T(SUMH,d.months.map(sumRow),{cols:SUMC,fill:[60,80,120]});
+    if(d.bk.length){H('Reservas',9.5,GREY);T(['Semana','Início previsto','Fim previsto','Destino / finalidade','Status','Retirada','Devolução','KM ini.','KM fim','KM rod.','Comb. ini.','Comb. fim','Obs. devolução'],
+      d.bk.map(b=>[bkWeek(b.start_at).lab.split(' ')[0],bkDT(b.start_at),bkDT(b.end_at),[b.destination,b.purpose].filter(Boolean).join(' - '),BST[b.status]?.[0]||b.status,bkDT(b.started_at),bkDT(b.returned_at),b.km_start??'-',b.km_end??'-',b.km_end!=null&&b.km_start!=null?b.km_end-b.km_start:'-',b.fuel_start!=null?fuelL(b.fuel_start):'-',b.fuel_end!=null?fuelL(b.fuel_end):'-',b.return_notes||'']),{cols:{3:{cellWidth:110},12:{cellWidth:90}}})}
+    if(d.ins.length){H('Vistorias',9.5,GREY);T(['Semana','Data / hora','Tipo','KM','Combustível','Resultado IA','Avarias registradas','Situação','Observações'],
+      d.ins.map(i=>{const dm=(x.dmgBy[i.id]||[]).map(g=>`${g.description||'avaria'} (${g.status})`).join('; ');const sit=[i.complete===false?'incompleta':'',i.analysis?.incident?'incidente':'',i.analysis?.consumption?.flag?'consumo alto':''].filter(Boolean).join(', ');
+       return[bkWeek(i.created_at).lab.split(' ')[0],bkDT(i.created_at),i.kind==='retirada'?'Retirada':'Devolução',i.km??'-',fuelL(i.fuel_level),bkAnalysis(i),dm||'-',sit||'-',i.notes||'']}),{cols:{6:{cellWidth:150},8:{cellWidth:110}}})}
+    if(d.ck.length){H('Checklists NOSBEB',9.5,GREY);T(['Semana','Data / hora','Condição','KM','No prazo','Combustível ok','Itens não conformes','Observações'],
+      d.ck.map(k=>[bkWeek(k.created_at).lab.split(' ')[0],bkDT(k.created_at),CND[k.condition]?.[1]||k.condition,k.km??'-',k.on_schedule==null?'-':k.on_schedule?'sim':'não',k.fuel_ok==null?'-':k.fuel_ok?'sim':'não',bkNC(k).join('; ')||'-',k.notes||'']),{cols:{6:{cellWidth:200},7:{cellWidth:120}}})}
+   }})}
+ const n=doc.internal.getNumberOfPages();for(let i=1;i<=n;i++){doc.setPage(i);doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(...GREY);doc.text(`FrotaCheck - relatório completo - ${meta.periodo}`,MX,PH-16);doc.text(`Página ${i} de ${n}`,PW-MX,PH-16,{align:'right'})}
+ return doc}
+function bkDownload(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4e4)}
+function bkToggle(){const on=$('#bkAll').checked;$('#bkRange').style.display=on?'none':'flex'}
+async function bkRun(kind){if(!isG())return toast('Só o gestor pode gerar o backup');const msg=$('#bkMsg');
+ let from=null,to=null,periodo='Todo o histórico';
+ if(kind==='pdf'&&!$('#bkAll').checked){const f=$('#bkF').value,t=$('#bkT').value;if(!f||!t)return toast('Informe as datas inicial e final');if(f>t)return toast('A data inicial deve ser anterior à final');
+  from=new Date(f+'T00:00:00').toISOString();to=new Date(t+'T23:59:59.999').toISOString();periodo=`${f.split('-').reverse().join('/')} a ${t.split('-').reverse().join('/')}`}
+ busy(true,'Lendo dados...');msg.textContent='';
+ try{const stamp=localDate(new Date());
+  if(kind==='json'){const out={app:'FrotaCheck',formato:1,gerado_em:new Date().toISOString(),gerado_por:ME.name,tabelas:{},erros:{}};
+   for(const t of BK_TABLES){busy(true,'Lendo '+t+'...');try{out.tabelas[t]=await bkAll(t)}catch(e){out.erros[t]=e.message;out.tabelas[t]=[]}}
+   const ph=new Set(),add=p=>{if(p&&typeof p==='string')ph.add(p)},T=out.tabelas;
+   T.inspections.forEach(i=>{Object.values(i.photos||{}).forEach(add);(i.extras||[]).forEach(e=>add(e.path))});T.damages.forEach(d=>add(d.photo_path));
+   T.nosbeb_checklists.forEach(k=>{add(k.water_photo);add(k.oil_photo);Object.values(k.photos||{}).forEach(add);Object.values(k.items||{}).forEach(x=>(x.photos||[]).forEach(add))});T.vehicles.forEach(v=>Object.values(v.base_photos||{}).forEach(add));
+   out.fotos=[...ph];busy(true,'Gerando arquivo...');
+   bkDownload(new Blob([JSON.stringify(out)],{type:'application/json'}),`frotacheck-backup-${stamp}.json`);
+   const er=Object.keys(out.erros);msg.textContent=`JSON gerado: ${Object.values(T).reduce((s,a)=>s+a.length,0)} registros e ${out.fotos.length} caminhos de fotos.${er.length?' Atenção, não foi possível ler: '+er.join(', ')+'.':''} Contém dados pessoais (CNH, telefone): guarde em local seguro.`;return}
+  const R={};for(const [t,col] of [['companies'],['profiles'],['vehicles'],['bookings','start_at'],['inspections','created_at'],['damages','created_at'],['nosbeb_checklists','created_at']]){busy(true,'Lendo '+t+'...');R[t]=await bkAll(t,col,from,to)}
+  busy(true,'Montando relatório...');const M=bkBuild(R);
+  busy(true,'Gerando PDF...');await new Promise(r=>setTimeout(r,30));const doc=await bkPdf(M,{periodo,por:ME.name});
+  bkDownload(doc.output('blob'),`frotacheck-relatorio-${stamp}.pdf`);
+  msg.textContent=`PDF gerado: ${M.tot.bk} reservas, ${M.tot.ins} vistorias e ${M.tot.ck} checklists em ${doc.internal.getNumberOfPages()} páginas.`}
+ catch(e){msg.textContent='Falha ao gerar: '+e.message;toast('Falha ao gerar: '+e.message)}finally{busy(false)}}
+const bkCard=()=>`<div class="card"><h3>Backup do app</h3><div class="small mut">PDF completo por <b>Empresa › Veículo › Motorista</b>, com reservas, vistorias e checklists NOSBEB, em resumo mensal e semanal (sem fotos). O JSON guarda todos os registros do banco para restauração.</div>
+ <div class="row" style="margin-top:10px;gap:14px;align-items:flex-end"><label class="row" style="gap:6px;margin:0"><input type="checkbox" id="bkAll" checked onchange="bkToggle()"> Todo o histórico</label>
+ <div id="bkRange" class="row" style="display:none;gap:10px"><div><label style="margin-top:0">De</label><input type="date" id="bkF"></div><div><label style="margin-top:0">Até</label><input type="date" id="bkT" value="${today()}"></div></div></div>
+ <div class="row" style="margin-top:10px"><button class="btn pri" onclick="bkRun('pdf')">📄 Gerar PDF</button><button class="btn" onclick="bkRun('json')">💾 Baixar backup JSON</button></div><div id="bkMsg" class="small mut" style="margin-top:6px"></div></div>`;
 
 /* ======================= DEMO: dados de exemplo ======================= */
 async function seedDemo(){const A=api,H=36e5,N=Date.now(),iso=t=>new Date(t).toISOString(),at=(d,h,m=0)=>{const x=new Date();x.setDate(x.getDate()+d);x.setHours(h,m,0,0);return x.toISOString()},dplus=n=>localDate(new Date(N+n*864e5));
