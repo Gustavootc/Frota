@@ -1713,7 +1713,7 @@ VIEWS.usuarios=()=>{const q=(VARG||'').toLowerCase(),L=D.profiles.filter(u=>!q||
 
 /* ======================= RELATÓRIOS ======================= */
 VIEWS.relatorios=()=>{const r=VARG||{from:today().slice(0,8)+'01',to:today()};AFTER.push(()=>loadReport(r));
- return`<h2>Relatórios</h2>${bkCard()}<div class="card row"><div><label style="margin-top:0">De</label><input type="date" id="rF" value="${r.from}"></div><div><label style="margin-top:0">Até</label><input type="date" id="rT" value="${r.to}"></div><button class="btn pri" style="align-self:flex-end" onclick="go('relatorios',{from:$('#rF').value,to:$('#rT').value})">Atualizar</button></div><div id="repOut"><div class="card mut">Carregando...</div></div>`};
+ return`<h2>Relatórios</h2>${bkCard()}${bkPurgeCard()}<div class="card row"><div><label style="margin-top:0">De</label><input type="date" id="rF" value="${r.from}"></div><div><label style="margin-top:0">Até</label><input type="date" id="rT" value="${r.to}"></div><button class="btn pri" style="align-self:flex-end" onclick="go('relatorios',{from:$('#rF').value,to:$('#rT').value})">Atualizar</button></div><div id="repOut"><div class="card mut">Carregando...</div></div>`};
 let REP=null;
 async function loadReport(r){try{const f=new Date(r.from+'T00:00:00').toISOString(),t=new Date(r.to+'T23:59:59').toISOString();
  const [bk,rf,mt,dm,ins]=await Promise.all([api.select('bookings',{f:[['gte','start_at',f],['lte','start_at',t]],order:'start_at'}),api.select('refuels',{f:[['gte','created_at',f],['lte','created_at',t]]}),api.select('maintenance',{f:[['gte','done_at',r.from],['lte','done_at',r.to]]}),api.select('damages',{f:[['gte','created_at',f],['lte','created_at',t]]}),api.select('inspections',{f:[['gte','created_at',f],['lte','created_at',t]]})]);
@@ -1837,6 +1837,89 @@ const bkCard=()=>`<div class="card"><h3>Backup do app</h3><div class="small mut"
  <div class="row" style="margin-top:10px;gap:14px;align-items:flex-end"><label class="row" style="gap:6px;margin:0"><input type="checkbox" id="bkAll" checked onchange="bkToggle()"> Todo o histórico</label>
  <div id="bkRange" class="row" style="display:none;gap:10px"><div><label style="margin-top:0">De</label><input type="date" id="bkF"></div><div><label style="margin-top:0">Até</label><input type="date" id="bkT" value="${today()}"></div></div></div>
  <div class="row" style="margin-top:10px"><button class="btn pri" onclick="bkRun('pdf')">📄 Gerar PDF</button><button class="btn" onclick="bkRun('json')">💾 Baixar backup JSON</button></div><div id="bkMsg" class="small mut" style="margin-top:6px"></div></div>`;
+
+/* ======================= ARQUIVAR E APAGAR HISTÓRICO ANTIGO (gestor) ======================= */
+const BKP={run:false};
+const bkSan=s=>String(s??'').normalize('NFD').replace(/[^\x00-\x7F]/g,'').replace(/[^A-Za-z0-9._-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,50)||'x';
+async function bkWrite(dir,name,blob){const fh=await dir.getFileHandle(name,{create:true});const w=await fh.createWritable();await w.write(blob);await w.close();const f=await fh.getFile();if(f.size!==blob.size)throw new Error('Arquivo gravado com tamanho diferente do esperado: '+name)}
+const bkB64=b=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error||new Error('leitura'));r.readAsDataURL(b)});
+const bkDim=u=>new Promise(res=>{const im=new Image();im.onload=()=>res([im.naturalWidth,im.naturalHeight]);im.onerror=()=>res(null);im.src=u});
+// baixa uma foto do Storage: {url,w,h,fmt} | {missing:true} (arquivo não existe mais); lança erro em falha de rede (o registro então NÃO é apagado)
+async function bkImg(path){for(let t=0;t<3;t++){try{const b=await api.photoBlob(path);const url=await bkB64(b);const d=await bkDim(url);if(!d)throw new Error('imagem inválida');return{url,w:d[0],h:d[1],fmt:/png/i.test(b.type)?'PNG':'JPEG'}}
+ catch(e){if(/not found|404|does not exist|não encontrada/i.test(e.message||''))return{missing:true};if(t===2)throw e;await new Promise(r=>setTimeout(r,700*(t+1)))}}}
+const BK_VL={frente:'Frente',lat_esq:'Lateral esquerda',traseira:'Traseira',lat_dir:'Lateral direita',painel:'Painel'};
+const BK_ST={ok:'sem diferença',warn:'atenção',bad:'possível dano',framing:'não comparável',baseline:'referência',noai:'sem análise (IA indisponível)'};
+// PDF de UMA vistoria ('ins') ou de UM checklist ('ck'), com as fotos. X={veh,prof,comp,dmgBy,bk}
+async function bkRecPdf(kind,r,X){await bkLib();const {jsPDF}=window.jspdf;const doc=new jsPDF({unit:'pt',format:'a4',compress:true});const PW=595.28,PH=841.89,MX=36;let y=0;
+ const NAVY=[23,37,84],GREY=[90,98,110];const ensure=h=>{if(y+h>PH-40){doc.addPage();y=44}};
+ const H=(t,sz,col)=>{ensure(sz+14);doc.setFont('helvetica','bold');doc.setFontSize(sz);doc.setTextColor(...(col||NAVY));doc.text(bkTxt(t),MX,y+sz);y+=sz+8};
+ const v=X.veh[r.vehicle_id]||{},co=X.comp[v.company_id]?.name||'Sem empresa',drv=kind==='ins'?r.driver_id:r.inspected_by,pn=X.prof[drv]?.name||r.driver_name||'(usuário removido)',pc=X.prof[drv]?.card||'';
+ doc.setFillColor(...NAVY);doc.rect(0,0,PW,70,'F');doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(18);doc.text('FrotaCheck',MX,32);doc.setFontSize(11);doc.setFont('helvetica','normal');
+ doc.text(kind==='ins'?(r.kind==='retirada'?'Vistoria de retirada':'Vistoria de devolução'):'Checklist NOSBEB',MX,52);doc.setFontSize(8);doc.text('ID '+r.id,PW-MX,52,{align:'right'});y=90;
+ const rows=[['Empresa',co],['Veículo',`${v.plate||'-'} ${v.model||''}${v.year?' ('+v.year+')':''}`],['Motorista',pn+(pc?' (cartão '+pc+')':'')],['Data / hora',bkDT(r.created_at)],['KM',r.km??'-']];
+ if(kind==='ins'){const b=X.bk[r.booking_id];rows.push(['Combustível',fuelL(r.fuel_level)],['Reserva',b?`${[b.destination,b.purpose].filter(Boolean).join(' - ')} | ${bkDT(b.start_at)} a ${bkDT(b.end_at)} | ${BST[b.status]?.[0]||b.status}`:'-'],['Resultado da análise',bkAnalysis(r)],
+  ['Situação',[r.complete===false?'vistoria incompleta':'',r.analysis?.incident?'incidente informado':'',r.analysis?.consumption?.flag?'consumo acima do esperado':''].filter(Boolean).join(', ')||'-']);
+  CHECKS.forEach(([k,l])=>rows.push([l,r.checks?.[k]||'-']));rows.push(['Observações',r.notes||'-'])}
+ else{rows.push(['Período',r.due_date?new Date(r.due_date+'T12:00:00').toLocaleDateString('pt-BR'):'-'],['No prazo',r.on_schedule==null?'-':r.on_schedule?'sim':'não'],['Condição',CND[r.condition]?.[1]||r.condition],['Combustível ok',r.fuel_ok==null?'-':r.fuel_ok?'sim':'não']);
+  if(r.km_flag||r.km_justification)rows.push(['KM informado',`${r.km_declared??'-'} ${r.km_flag?'('+r.km_flag+')':''} ${r.km_justification||''}`]);rows.push(['Observações',r.notes||'-'])}
+ doc.autoTable({body:rows.map(a=>a.map(bkTxt)),startY:y,margin:{left:MX,right:MX,top:44,bottom:40},theme:'grid',styles:{font:'helvetica',fontSize:9,cellPadding:3,lineColor:[210,214,222],lineWidth:.4,textColor:[30,35,45]},columnStyles:{0:{cellWidth:130,fontStyle:'bold',fillColor:[240,243,250]}}});y=doc.lastAutoTable.finalY+12;
+ if(kind==='ins'){const its=(r.analysis?.items||[]);if(its.length){H('Análise por ângulo',11);doc.autoTable({head:[['Ângulo','Resultado','Detalhe']],body:its.map(i=>[i.label||BK_VL[i.k]||i.k,BK_ST[i.status]||i.status||'-',i.text||'']).map(a=>a.map(bkTxt)),startY:y,margin:{left:MX,right:MX,top:44,bottom:40},theme:'grid',styles:{font:'helvetica',fontSize:8,cellPadding:3,lineColor:[210,214,222],lineWidth:.4},headStyles:{fillColor:NAVY},columnStyles:{0:{cellWidth:110},1:{cellWidth:90}}});y=doc.lastAutoTable.finalY+12}
+  const dm=X.dmgBy[r.id]||[];if(dm.length){H('Avarias registradas',11);doc.autoTable({head:[['Descrição','Origem','Status','Custo reparo']],body:dm.map(g=>[g.description||'-',g.source||'-',g.status||'-',g.repair_cost!=null?'R$ '+Number(g.repair_cost).toLocaleString('pt-BR',{minimumFractionDigits:2}):'-']).map(a=>a.map(bkTxt)),startY:y,margin:{left:MX,right:MX,top:44,bottom:40},theme:'grid',styles:{font:'helvetica',fontSize:8,cellPadding:3,lineColor:[210,214,222],lineWidth:.4},headStyles:{fillColor:NAVY}});y=doc.lastAutoTable.finalY+12}}
+ else{const its=Object.entries(r.items||{});if(its.length){H('Itens do checklist',11);doc.autoTable({head:[['Item','Situação','Observação']],body:its.map(([k,s])=>[(NITEMS.find(n=>n[0]===k)||[k,k])[1],s?.status==='nao_conforme'?'NÃO CONFORME':s?.status==='conforme'?'conforme':(s?.status||'-'),s?.note||'']).map(a=>a.map(bkTxt)),startY:y,margin:{left:MX,right:MX,top:44,bottom:40},theme:'grid',styles:{font:'helvetica',fontSize:8,cellPadding:3,lineColor:[210,214,222],lineWidth:.4},headStyles:{fillColor:NAVY}});y=doc.lastAutoTable.finalY+12}}
+ // fotos
+ const ph=[];if(kind==='ins'){const seen=new Set();for(const a of ANGLES){const p=r.photos?.[a.k];if(p){ph.push({p,l:a.l.replace(/ \(.*\)/,'')});seen.add(a.k)}}for(const [k,p] of Object.entries(r.photos||{}))if(!seen.has(k)&&p)ph.push({p,l:BK_VL[k]||k});(r.extras||[]).forEach((e,i)=>{if(e&&e.path)ph.push({p:e.path,l:`Detalhe ${i+1}${e.damage?' (dano)':''}${e.note?': '+e.note:''}`})})}
+ else{if(r.water_photo)ph.push({p:r.water_photo,l:'Nível da água'});if(r.oil_photo)ph.push({p:r.oil_photo,l:'Nível do óleo'});for(const [k,p] of Object.entries(r.photos||{}))if(p)ph.push({p,l:BK_VL[k]||k});
+  for(const [k,s] of Object.entries(r.items||{}))(s?.photos||[]).forEach((p,i)=>{if(p)ph.push({p,l:`${(NITEMS.find(n=>n[0]===k)||[k,k])[1]} (${i+1})`})})}
+ const imgs=[];for(let i=0;i<ph.length;i+=4)imgs.push(...await Promise.all(ph.slice(i,i+4).map(async x=>({...x,img:await bkImg(x.p)}))));
+ if(imgs.length){H(`Fotos (${imgs.length})`,11);const CW=(PW-2*MX-14)/2;
+  for(let i=0;i<imgs.length;i+=2){const row=imgs.slice(i,i+2),hs=row.map(x=>x.img.missing?30:Math.min(250,CW*x.img.h/x.img.w));const rh=Math.max(...hs)+22;ensure(rh);
+   row.forEach((x,j)=>{const px=MX+j*(CW+14);doc.setFont('helvetica','bold');doc.setFontSize(8.5);doc.setTextColor(...GREY);doc.text(bkTxt(x.l),px,y+9);
+    if(x.img.missing){doc.setFont('helvetica','normal');doc.text('(foto não encontrada no armazenamento)',px,y+26)}else{const h=hs[j],w=h===250?250*x.img.w/x.img.h:CW;doc.addImage(x.img.url,x.img.fmt,px,y+14,Math.min(CW,w),h,undefined,'FAST')}});y+=rh}}
+ const n=doc.internal.getNumberOfPages();for(let i=1;i<=n;i++){doc.setPage(i);doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.setTextColor(...GREY);doc.text(`FrotaCheck - arquivo de ${kind==='ins'?'vistoria':'checklist'} - ${r.id}`,MX,PH-18);doc.text(`Página ${i} de ${n}`,PW-MX,PH-18,{align:'right'})}
+ return doc}
+// separa os registros ligados às vistorias: as avarias ficam (custos), só deixam de apontar para a vistoria apagada
+async function bkDetach(ids){if(!ids.length)return;if(!api.c){api.t.damages.forEach(d=>{if(ids.includes(d.inspection_id))d.inspection_id=null});return}
+ const {error}=await api.c.from('damages').update({inspection_id:null}).in('inspection_id',ids);if(error)throw api.err(error)}
+async function bkPlan(day){const to=new Date(new Date(day+'T00:00:00').getTime()-1).toISOString();const R={};
+ for(const [t,col] of [['companies'],['profiles'],['vehicles'],['bookings','start_at'],['inspections','created_at'],['damages','created_at'],['nosbeb_checklists','created_at']]){busy(true,'Lendo '+t+'...');R[t]=await bkAll(t,col,null,to)}
+ const prot=new Set();for(const v of R.vehicles){for(const t of ['inspections','nosbeb_checklists']){const L=await api.select(t,{f:[['eq','vehicle_id',v.id]],order:'created_at',desc:true,limit:1});if(L&&L[0])prot.add(L[0].id)}}
+ const sort=a=>a.sort((x,y)=>x.created_at<y.created_at?-1:1);const insA=sort(R.inspections.filter(i=>!prot.has(i.id))),ckA=sort(R.nosbeb_checklists.filter(k=>!prot.has(k.id)));
+ const all=sort([...insA.map(r=>({k:'ins',r})),...ckA.map(r=>({k:'ck',r}))].map(x=>({...x,created_at:x.r.created_at}))).slice(0,300);
+ return{R,to,insT:all.filter(x=>x.k==='ins').map(x=>x.r),ckT:all.filter(x=>x.k==='ck').map(x=>x.r),total:insA.length+ckA.length,prot:prot.size}}
+async function bkPurgeRun(){if(BKP.run)return;if(!isG())return toast('Só o gestor pode apagar o histórico');
+ if(!window.showDirectoryPicker)return toast('Este recurso precisa do Chrome ou Edge no computador (o navegador de celular não grava em pasta).');
+ const day=$('#pgDay').value;if(!day||day>today())return toast('Escolha uma data até hoje');const msg=$('#pgMsg');let dir;
+ try{dir=await window.showDirectoryPicker({mode:'readwrite'})}catch(e){return toast('Nenhuma pasta escolhida')}
+ BKP.run=true;msg.textContent='';
+ try{const dd=day.split('-').reverse().join('/');const P=await bkPlan(day);busy(false);
+  if(!P.insT.length&&!P.ckT.length){msg.textContent=`Nada a apagar antes de ${dd}: não há vistorias ou checklists mais antigos (a mais recente de cada veículo é sempre mantida).`;return}
+  const resto=P.total-P.insT.length-P.ckT.length;
+  if(!confirm(`Antes de ${dd} serão ARQUIVADOS EM PDF e depois APAGADOS DO SUPABASE:\n\n• ${P.insT.length} vistoria(s)\n• ${P.ckT.length} checklist(s) NOSBEB\n(com todas as fotos deles)${resto>0?`\n\nHá mais ${resto} registro(s) antigos: eles ficam para a próxima rodada (máx. 300 por vez).`:''}\n\nFicam mantidos: veículos, usuários, empresas, reservas, abastecimentos, manutenções e avarias. A vistoria e o checklist mais recentes de cada veículo também ficam.\n\nO app vai gravar na pasta escolhida o backup JSON, o relatório geral e um PDF para cada registro, e só apaga o que foi gravado e conferido. A exclusão não pode ser desfeita. Continuar?`))return;
+  const word=prompt('Para confirmar, digite APAGAR:');if(word!=='APAGAR'){toast('Cancelado: nada foi apagado');return}
+  const stamp=localDate(new Date());const sub=await dir.getDirectoryHandle(`FrotaCheck_arquivo_ate_${day}_gerado_${stamp}_${Date.now().toString(36)}`,{create:true});
+  const dI=await sub.getDirectoryHandle('vistorias',{create:true}),dC=await sub.getDirectoryHandle('checklists',{create:true});
+  busy(true,'Gravando backup JSON completo...');const J={app:'FrotaCheck',formato:1,gerado_em:new Date().toISOString(),gerado_por:ME.name,tabelas:{},erros:{}};
+  for(const t of BK_TABLES){busy(true,'Backup JSON: '+t+'...');try{J.tabelas[t]=await bkAll(t)}catch(e){J.erros[t]=e.message;J.tabelas[t]=[]}}
+  if(Object.keys(J.erros).length)throw new Error('Não foi possível ler para o backup: '+Object.keys(J.erros).join(', ')+'. Nada foi apagado.');
+  await bkWrite(sub,`backup_completo_${stamp}.json`,new Blob([JSON.stringify(J)],{type:'application/json'}));
+  busy(true,'Gerando relatório geral em PDF...');const M=bkBuild(P.R);const gdoc=await bkPdf(M,{periodo:'Até '+dd,por:ME.name});await bkWrite(sub,`relatorio_geral_ate_${day}.pdf`,gdoc.output('blob'));
+  const X={veh:Object.fromEntries(P.R.vehicles.map(v=>[v.id,v])),prof:Object.fromEntries(P.R.profiles.map(p=>[p.id,p])),comp:Object.fromEntries(P.R.companies.map(c=>[c.id,c])),bk:Object.fromEntries(P.R.bookings.map(b=>[b.id,b])),dmgBy:{}};
+  P.R.damages.forEach(d=>{if(d.inspection_id)(X.dmgBy[d.inspection_id]=X.dmgBy[d.inspection_id]||[]).push(d)});
+  const okI=[],okC=[],fail=[];const todo=[...P.insT.map(r=>['ins',r]),...P.ckT.map(r=>['ck',r])];let n=0;
+  for(const [k,r] of todo){n++;busy(true,`Arquivando em PDF ${n}/${todo.length}...`);
+   try{const doc=await bkRecPdf(k,r,X);const v=X.veh[r.vehicle_id]||{};const nm=`${localDate(new Date(r.created_at))}_${new Date(r.created_at).toTimeString().slice(0,5).replace(':','h')}_${bkSan(v.plate)}_${k==='ins'?(r.kind==='retirada'?'retirada':'devolucao'):'checklist'}_${bkSan(X.prof[k==='ins'?r.driver_id:r.inspected_by]?.name||'sem-motorista')}_${String(r.id).slice(0,8)}.pdf`;
+    await bkWrite(k==='ins'?dI:dC,nm,doc.output('blob'));(k==='ins'?okI:okC).push(r.id)}
+   catch(e){fail.push(`${k==='ins'?'vistoria':'checklist'} ${r.id}: ${e.message}`)}}
+  let delI=0,delC=0;const B=25;
+  for(let i=0;i<okI.length;i+=B){const ids=okI.slice(i,i+B);busy(true,`Apagando vistorias ${Math.min(i+B,okI.length)}/${okI.length}...`);await bkDetach(ids);await api.delInspections(ids);delI+=ids.length}
+  for(let i=0;i<okC.length;i+=B){const ids=okC.slice(i,i+B);busy(true,`Apagando checklists ${Math.min(i+B,okC.length)}/${okC.length}...`);await api.delChecklists(ids);delC+=ids.length}
+  const txt=`FrotaCheck - arquivo de histórico\nGerado em ${bkDT(new Date().toISOString())} por ${ME.name}\nRegistros anteriores a ${dd}\n\nVistorias arquivadas e apagadas: ${delI}\nChecklists arquivados e apagados: ${delC}\nNão apagados por falha ao gravar o PDF: ${fail.length}\n${fail.join('\n')}\n\nArquivos: backup_completo_${stamp}.json (todas as tabelas), relatorio_geral_ate_${day}.pdf, pasta vistorias, pasta checklists.\nIDs apagados (vistorias): ${okI.join(', ')}\nIDs apagados (checklists): ${okC.join(', ')}\n`;
+  await bkWrite(sub,'LEIA-ME.txt',new Blob([txt],{type:'text/plain'}));
+  msg.textContent=`Concluído: ${delI} vistoria(s) e ${delC} checklist(s) arquivados em PDF na pasta "${sub.name}" e apagados do Supabase.${fail.length?` ${fail.length} registro(s) NÃO foram apagados porque o PDF falhou (veja LEIA-ME.txt).`:''}${resto>0?` Ainda há ${resto} registro(s) antigos: rode de novo.`:''}`;toast('Histórico arquivado e apagado')}
+ catch(e){msg.textContent='Interrompido: '+e.message+' (o que já foi apagado está arquivado na pasta; o resto continua no Supabase)';toast('Interrompido: '+e.message,6000)}
+ finally{BKP.run=false;busy(false)}}
+const bkPurgeCard=()=>`<div class="card"><h3>Arquivar e apagar histórico antigo</h3><div class="small mut">Libera espaço no Supabase. Para cada vistoria e checklist anterior à data escolhida, o app grava um <b>PDF com as fotos</b> numa pasta que você escolher (pode ser uma pasta de rede), junto com o <b>backup JSON</b> completo e o <b>relatório geral em PDF</b>. Só depois de gravar e conferir os arquivos, apaga as vistorias e os checklists (e as fotos) do Supabase. <b>Ficam mantidos:</b> veículos, usuários, empresas, reservas (KM e horas), abastecimentos, manutenções e avarias com custos. A vistoria e o checklist mais recentes de cada veículo também ficam. Use Chrome ou Edge no computador.</div>
+ <div class="row" style="margin-top:10px;align-items:flex-end;gap:10px"><div><label style="margin-top:0">Apagar tudo anterior a</label><input type="date" id="pgDay" value="${addDays(today(),-90)}" max="${today()}"></div><button class="btn bad" onclick="bkPurgeRun()">🗑 Escolher pasta, arquivar e apagar</button></div><div id="pgMsg" class="small mut" style="margin-top:6px"></div></div>`;
 
 /* ======================= DEMO: dados de exemplo ======================= */
 async function seedDemo(){const A=api,H=36e5,N=Date.now(),iso=t=>new Date(t).toISOString(),at=(d,h,m=0)=>{const x=new Date();x.setDate(x.getDate()+d);x.setHours(h,m,0,0);return x.toISOString()},dplus=n=>localDate(new Date(N+n*864e5));
